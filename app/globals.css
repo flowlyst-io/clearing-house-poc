@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+/* Calm, civic palette — this is government/education software, not a startup landing page.
+   Slate neutrals + a single trustworthy blue accent + amber for "needs a human". */
+@theme {
+  --color-ink: #1e293b;
+  --color-muted: #64748b;
+  --color-line: #e2e8f0;
+  --color-surface: #ffffff;
+  --color-canvas: #f8fafc;
+  --color-accent: #2563eb;
+  --color-accent-soft: #eff6ff;
+  --color-flag: #d97706;
+  --color-flag-soft: #fffbeb;
+  --color-ok: #059669;
+  --color-ok-soft: #ecfdf5;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
