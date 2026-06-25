@@ -31,6 +31,8 @@ export default function ComparePage() {
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [showAllSections, setShowAllSections] = useState(false);
+  const [showAllDistricts, setShowAllDistricts] = useState(false);
   const [drawer, setDrawer] = useState<{
     district: District;
     section: ParsedSection;
@@ -184,6 +186,8 @@ export default function ComparePage() {
               )
             }
             onClear={() => setSectionKeys(new Set())}
+            expanded={showAllSections}
+            onToggleExpand={() => setShowAllSections((v) => !v)}
             items={visibleSections.map((s) => ({
               id: s.key,
               label: s.label,
@@ -202,6 +206,8 @@ export default function ComparePage() {
                 )
               }
               onClear={() => setSelected(new Set())}
+              expanded={showAllDistricts}
+              onToggleExpand={() => setShowAllDistricts((v) => !v)}
               items={visibleDistricts.map((d) => ({
                 id: d.id,
                 label: d.name,
@@ -391,19 +397,46 @@ interface FilterItem {
   onToggle: () => void;
 }
 
+const COLLAPSED_CAP = 5;
+
+// When collapsed, show at most COLLAPSED_CAP rows — but always include every
+// selected item (filling the rest with unselected ones, in order) so a checked
+// option is never hidden below the fold while its row shows in the matrix.
+function capItems(items: FilterItem[], expanded: boolean): FilterItem[] {
+  if (expanded) return items;
+  const selectedCount = items.filter((i) => i.active).length;
+  let fillers = Math.max(COLLAPSED_CAP - selectedCount, 0);
+  const out: FilterItem[] = [];
+  for (const it of items) {
+    if (it.active) out.push(it);
+    else if (fillers > 0) {
+      out.push(it);
+      fillers--;
+    }
+  }
+  return out;
+}
+
 function FilterList({
   label,
   count,
   onAll,
   onClear,
+  expanded,
+  onToggleExpand,
   items,
 }: {
   label: string;
   count: string;
   onAll: () => void;
   onClear: () => void;
+  expanded: boolean;
+  onToggleExpand: () => void;
   items: FilterItem[];
 }) {
+  const visible = capItems(items, expanded);
+  const hidden = items.length - visible.length;
+
   return (
     <div>
       <div className="flex items-center gap-3">
@@ -429,9 +462,17 @@ function FilterList({
             No matches.
           </p>
         ) : (
-          items.map((it) => <CheckRow key={it.id} item={it} />)
+          visible.map((it) => <CheckRow key={it.id} item={it} />)
         )}
       </div>
+      {(hidden > 0 || expanded) && (
+        <button
+          onClick={onToggleExpand}
+          className="mt-1 px-2 text-xs font-medium text-[var(--color-accent)] hover:underline"
+        >
+          {expanded ? "See less" : `See ${hidden} more`}
+        </button>
+      )}
     </div>
   );
 }
