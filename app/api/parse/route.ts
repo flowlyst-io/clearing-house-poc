@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAnthropic, MODEL } from "@/lib/anthropic";
+import { getAnthropic, PARSE_MODEL } from "@/lib/anthropic";
 import { TAXONOMY } from "@/lib/taxonomy";
 import type { ParseResult, ParsedSection } from "@/lib/types";
 
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
 
     const client = getAnthropic();
     const stream = client.messages.stream({
-      model: MODEL,
+      model: PARSE_MODEL,
       max_tokens: 16000,
       thinking: { type: "adaptive" },
       output_config: {

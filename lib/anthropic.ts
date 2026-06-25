@@ -15,4 +15,10 @@ export function getAnthropic(): Anthropic {
   return client;
 }
 
+// Default model (used by the summarize route).
 export const MODEL = "claude-opus-4-8";
+
+// Contract parsing runs on Sonnet 4.6 — faster and cheaper for the long,
+// whole-contract extraction. Supports the same call shape (adaptive thinking,
+// output_config effort, structured outputs).
+export const PARSE_MODEL = "claude-sonnet-4-6";
