@@ -82,59 +82,68 @@ export default function ComparePage() {
     return next;
   }
 
-  // ---- AI summaries, one per section row, fetched on demand and cached ----
-  const [summaries, setSummaries] = useState<Record<string, SummaryState>>({});
-  const fetched = useRef<Set<string>>(new Set());
   const selectedIdsKey = [...selected].sort().join(",");
 
   function rowFor(d: District, key: string): ParsedSection | null {
     return d.sections.find((s) => s.taxonomyKey === key) ?? null;
   }
 
-  // Fetch (or re-fetch, with force) one section's summary. Results are keyed by
-  // (section × selected districts), so a stale in-flight response only ever
-  // writes its own key — no cancellation bookkeeping needed.
-  function runSummary(sec: TaxonomySection, force = false) {
-    const sortedIds = [...selected].sort();
-    const items = chosen
-      .map((d) => ({ d, s: rowFor(d, sec.key) }))
-      .filter((x) => x.s)
-      .map((x) => ({ districtName: x.d.name, value: x.s!.extractedValue }));
-    if (items.length < 2) return;
-    const key = `${sec.key}|${sortedIds.join(",")}`;
-    if (!force && fetched.current.has(key)) return;
-    fetched.current.add(key);
-    setSummaries((s) => ({ ...s, [key]: { loading: true, text: "", error: null } }));
+  // ---- One overall AI summary across everything selected ----
+  const [overall, setOverall] = useState<SummaryState>({
+    loading: false,
+    text: "",
+    error: null,
+  });
+  const fetchedKey = useRef<string | null>(null);
+  const sectionKeysKey = [...sectionKeys].sort().join(",");
+
+  function fetchOverall(force = false) {
+    // Build the grid: each selected section (taxonomy order) with the value from
+    // each chosen district. Skip sections no chosen district has.
+    const payloadSections = sections
+      .map((sec) => ({
+        label: sec.label,
+        items: chosen
+          .map((d) => ({ d, s: rowFor(d, sec.key) }))
+          .filter((x) => x.s)
+          .map((x) => ({ districtName: x.d.name, value: x.s!.extractedValue })),
+      }))
+      .filter((s) => s.items.length > 0);
+
+    const key = `${sectionKeysKey}|${selectedIdsKey}`;
+    if (payloadSections.length === 0 || chosen.length === 0) {
+      fetchedKey.current = null;
+      setOverall({ loading: false, text: "", error: null });
+      return;
+    }
+    if (!force && fetchedKey.current === key) return;
+    fetchedKey.current = key;
+    setOverall({ loading: true, text: "", error: null });
     fetch("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taxonomyKey: sec.key, items }),
+      body: JSON.stringify({ sections: payloadSections }),
     })
       .then(async (res) => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Couldn't generate a summary.");
-        setSummaries((s) => ({
-          ...s,
-          [key]: { loading: false, text: data.synthesis, error: null },
-        }));
+        setOverall({ loading: false, text: data.synthesis, error: null });
       })
       .catch((e) => {
-        fetched.current.delete(key); // allow retry
-        setSummaries((s) => ({
-          ...s,
-          [key]: {
-            loading: false,
-            text: "",
-            error: e instanceof Error ? e.message : "Couldn't generate a summary.",
-          },
-        }));
+        fetchedKey.current = null; // allow retry
+        setOverall({
+          loading: false,
+          text: "",
+          error: e instanceof Error ? e.message : "Couldn't generate a summary.",
+        });
       });
   }
 
   useEffect(() => {
-    for (const sec of sections) runSummary(sec);
+    const t = setTimeout(() => fetchOverall(), 300);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [[...sectionKeys].sort().join(","), selectedIdsKey, districts]);
+  }, [sectionKeysKey, selectedIdsKey, districts]);
 
   return (
     <div className="space-y-6">
@@ -219,7 +228,42 @@ export default function ComparePage() {
         </aside>
 
         {/* Matrix */}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 space-y-4">
+          {/* One overall AI summary across everything selected */}
+          {sections.length > 0 && chosen.length > 0 && (
+            <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-accent-soft)] p-4 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium text-[var(--color-accent)]">
+                  AI summary
+                </span>
+                {overall.error && (
+                  <button
+                    onClick={() => fetchOverall(true)}
+                    className="shrink-0 text-xs font-medium text-[var(--color-accent)] underline"
+                  >
+                    Retry
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 leading-relaxed">
+                {overall.loading ? (
+                  <span className="text-[var(--color-muted)]">
+                    reading the values across {sections.length} section
+                    {sections.length === 1 ? "" : "s"}…
+                  </span>
+                ) : overall.error ? (
+                  <span className="text-[var(--color-flag)]">{overall.error}</span>
+                ) : overall.text ? (
+                  overall.text
+                ) : (
+                  <span className="text-[var(--color-muted)]">
+                    Select sections and districts to generate an overview.
+                  </span>
+                )}
+              </p>
+            </div>
+          )}
+
           {sections.length === 0 || chosen.length === 0 ? (
             <p className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
               {sections.length === 0
@@ -256,11 +300,9 @@ export default function ComparePage() {
                       section={sec}
                       districts={chosen}
                       rowFor={rowFor}
-                      summary={summaries[`${sec.key}|${selectedIdsKey}`]}
                       onOpen={(district, section) =>
                         setDrawer({ district, section })
                       }
-                      onRetry={() => runSummary(sec, true)}
                     />
                   ))}
                 </tbody>
@@ -286,16 +328,12 @@ function SectionRow({
   section,
   districts,
   rowFor,
-  summary,
   onOpen,
-  onRetry,
 }: {
   section: TaxonomySection;
   districts: District[];
   rowFor: (d: District, key: string) => ParsedSection | null;
-  summary?: SummaryState;
   onOpen: (d: District, s: ParsedSection) => void;
-  onRetry: () => void;
 }) {
   const cells = districts.map((d) => ({ d, sec: rowFor(d, section.key) }));
 
@@ -315,11 +353,8 @@ function SectionRow({
     )} · median ${formatValue(section.valueKind, median(nums))}`;
   })();
 
-  const colSpan = districts.length + 1;
-
   return (
-    <>
-      <tr className="border-t border-[var(--color-line)] align-top">
+    <tr className="border-t border-[var(--color-line)] align-top">
         <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left">
           <div className="font-semibold">{section.label}</div>
           {stats && (
@@ -361,32 +396,7 @@ function SectionRow({
             )}
           </td>
         ))}
-      </tr>
-      <tr className="bg-[var(--color-accent-soft)]/40">
-        <td
-          colSpan={colSpan}
-          className="px-4 pb-3 text-sm text-[var(--color-muted)]"
-        >
-          <span className="font-medium text-[var(--color-accent)]">
-            AI summary{" "}
-          </span>
-          {!summary ? (
-            <span>select two or more districts with this section.</span>
-          ) : summary.loading ? (
-            <span>reading the values…</span>
-          ) : summary.error ? (
-            <span className="text-[var(--color-flag)]">
-              {summary.error}{" "}
-              <button onClick={onRetry} className="font-medium underline">
-                Retry
-              </button>
-            </span>
-          ) : (
-            <span>{summary.text}</span>
-          )}
-        </td>
-      </tr>
-    </>
+    </tr>
   );
 }
 

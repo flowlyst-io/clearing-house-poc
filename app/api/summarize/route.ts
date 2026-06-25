@@ -1,47 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAnthropic, SUMMARIZE_MODEL } from "@/lib/anthropic";
 import { classifyError } from "@/lib/apiError";
-import { TAXONOMY_BY_KEY } from "@/lib/taxonomy";
 
 export const runtime = "nodejs";
 
 interface Item {
   districtName: string;
   value: string;
-  sourceText?: string;
+}
+interface SectionInput {
+  label: string;
+  items: Item[];
 }
 
 // POST /api/summarize
-// Body: { taxonomyKey, items: [{ districtName, value, sourceText? }] }
-// Returns: { synthesis }
-// Stats (min/max/median) are computed deterministically on the client — this
-// endpoint only writes the short natural-language read on how districts compare.
+// Body: { sections: [{ label, items: [{ districtName, value }] }] }
+// Returns: { synthesis } — ONE short overview across all the selected sections
+// and districts. Per-row min/median/max stats are computed on the client; this
+// endpoint only writes the natural-language read.
 export async function POST(req: NextRequest) {
   try {
-    const { taxonomyKey, items } = (await req.json()) as {
-      taxonomyKey: string;
-      items: Item[];
-    };
+    const { sections } = (await req.json()) as { sections: SectionInput[] };
 
-    const section = TAXONOMY_BY_KEY[taxonomyKey];
-    if (!section || !Array.isArray(items) || items.length === 0) {
+    const usable = Array.isArray(sections)
+      ? sections.filter((s) => s?.label && Array.isArray(s.items) && s.items.length > 0)
+      : [];
+    if (usable.length === 0) {
       return NextResponse.json(
         {
-          error: "taxonomyKey and a non-empty items array are required.",
+          error: "A non-empty sections array (each with items) is required.",
           retryable: false,
         },
         { status: 400 },
       );
     }
 
-    const rows = items
-      .map((i) => `- ${i.districtName}: ${i.value}`)
+    const grid = usable
+      .map(
+        (s) =>
+          `${s.label}: ` +
+          s.items.map((i) => `${i.districtName} = ${i.value}`).join("; "),
+      )
       .join("\n");
 
     const client = getAnthropic();
     const response = await client.messages.create({
       model: SUMMARIZE_MODEL,
-      max_tokens: 400,
+      max_tokens: 600,
       // Haiku 4.5 supports structured outputs but not `effort`/adaptive thinking.
       output_config: {
         format: {
@@ -52,7 +57,7 @@ export async function POST(req: NextRequest) {
               synthesis: {
                 type: "string",
                 description:
-                  "One or two plain sentences comparing the districts on this section.",
+                  "A short (2-4 sentence) plain-language overview across all the sections and districts.",
               },
             },
             required: ["synthesis"],
@@ -61,15 +66,16 @@ export async function POST(req: NextRequest) {
         },
       },
       system:
-        "You help a school-district negotiator quickly read a comparison table. " +
-        "Given how several districts handle one contract section, write ONE or TWO " +
-        "plain sentences on how they compare — note the spread (who is most/least " +
-        "generous) and anything notable. Be factual and grounded ONLY in the values " +
-        "given; never invent numbers or terms. No preamble, no bullet points.",
+        "You help a school-district negotiator read a comparison table covering " +
+        "several contract sections across several districts. Write a SHORT overview " +
+        "(2-4 plain sentences): the overall picture — which districts tend to be more " +
+        "or less generous across these sections, and the most notable differences or " +
+        "outliers. Be factual and grounded ONLY in the values given; never invent " +
+        "numbers or terms. No preamble, no bullet points, no headings.",
       messages: [
         {
           role: "user",
-          content: `Section: ${section.label} — ${section.description}\n\nValues by district:\n${rows}`,
+          content: `Comparison (section: district = value):\n\n${grid}`,
         },
       ],
     });
