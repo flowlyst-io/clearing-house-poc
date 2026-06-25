@@ -91,7 +91,20 @@ export default function UploadPage() {
         inPool: false, // enters the pool only after a human confirms in Review
         createdAt: Date.now(),
       };
-      addDistrict(district);
+      try {
+        addDistrict(district);
+      } catch (storeErr) {
+        // Out of localStorage space — honest message, not "couldn't reach parser".
+        setError({
+          message:
+            storeErr instanceof Error
+              ? storeErr.message
+              : "Couldn't save the contract locally.",
+          retryable: false,
+        });
+        setPhase("error");
+        return;
+      }
       router.push(`/review?d=${district.id}`);
     } catch {
       // fetch threw before any response — almost always transient/network.

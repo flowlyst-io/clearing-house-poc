@@ -195,7 +195,9 @@ function DistrictReview({
     setActive(null);
   }
   function addToPool() {
-    updateDistrict(district.id, { inPool: true });
+    // Drop the stored document text once pooled — Compare doesn't need it, and
+    // keeping full text for every district would bloat localStorage.
+    updateDistrict(district.id, { inPool: true, pages: undefined });
     router.push("/compare");
   }
   function discard() {
