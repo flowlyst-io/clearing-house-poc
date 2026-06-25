@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAnthropic, MODEL } from "@/lib/anthropic";
+import { getAnthropic, SUMMARIZE_MODEL } from "@/lib/anthropic";
 import { TAXONOMY_BY_KEY } from "@/lib/taxonomy";
 
 export const runtime = "nodejs";
@@ -36,11 +36,10 @@ export async function POST(req: NextRequest) {
 
     const client = getAnthropic();
     const response = await client.messages.create({
-      model: MODEL,
+      model: SUMMARIZE_MODEL,
       max_tokens: 400,
-      thinking: { type: "adaptive" },
+      // Haiku 4.5 supports structured outputs but not `effort`/adaptive thinking.
       output_config: {
-        effort: "low",
         format: {
           type: "json_schema",
           schema: {

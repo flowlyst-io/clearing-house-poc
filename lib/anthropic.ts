@@ -15,10 +15,12 @@ export function getAnthropic(): Anthropic {
   return client;
 }
 
-// Default model (used by the summarize route).
-export const MODEL = "claude-opus-4-8";
-
 // Contract parsing runs on Sonnet 4.6 — faster and cheaper for the long,
 // whole-contract extraction. Supports the same call shape (adaptive thinking,
 // output_config effort, structured outputs).
 export const PARSE_MODEL = "claude-sonnet-4-6";
+
+// Summaries run on Haiku 4.5 — a one-line synthesis, so the cheapest tier is fine.
+// NOTE: Haiku 4.5 does NOT support `effort` or adaptive `thinking` (both 400);
+// it DOES support structured outputs, which is all the summarize route needs.
+export const SUMMARIZE_MODEL = "claude-haiku-4-5";
