@@ -71,49 +71,48 @@ export default function ComparePage() {
     return d.sections.find((s) => s.taxonomyKey === key) ?? null;
   }
 
-  useEffect(() => {
-    let cancelled = false;
+  // Fetch (or re-fetch, with force) one section's summary. Results are keyed by
+  // (section × selected districts), so a stale in-flight response only ever
+  // writes its own key — no cancellation bookkeeping needed.
+  function runSummary(sec: TaxonomySection, force = false) {
     const sortedIds = [...selected].sort();
-    for (const sec of sections) {
-      const items = chosen
-        .map((d) => ({ d, sec: rowFor(d, sec.key) }))
-        .filter((x) => x.sec)
-        .map((x) => ({ districtName: x.d.name, value: x.sec!.extractedValue }));
-      if (items.length < 2) continue;
-      const key = `${sec.key}|${sortedIds.join(",")}`;
-      if (fetched.current.has(key)) continue;
-      fetched.current.add(key);
-      setSummaries((s) => ({ ...s, [key]: { loading: true, text: "", error: null } }));
-      fetch("/api/summarize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taxonomyKey: sec.key, items }),
+    const items = chosen
+      .map((d) => ({ d, s: rowFor(d, sec.key) }))
+      .filter((x) => x.s)
+      .map((x) => ({ districtName: x.d.name, value: x.s!.extractedValue }));
+    if (items.length < 2) return;
+    const key = `${sec.key}|${sortedIds.join(",")}`;
+    if (!force && fetched.current.has(key)) return;
+    fetched.current.add(key);
+    setSummaries((s) => ({ ...s, [key]: { loading: true, text: "", error: null } }));
+    fetch("/api/summarize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taxonomyKey: sec.key, items }),
+    })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Couldn't generate a summary.");
+        setSummaries((s) => ({
+          ...s,
+          [key]: { loading: false, text: data.synthesis, error: null },
+        }));
       })
-        .then(async (res) => {
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "Summary failed");
-          if (!cancelled)
-            setSummaries((s) => ({
-              ...s,
-              [key]: { loading: false, text: data.synthesis, error: null },
-            }));
-        })
-        .catch((e) => {
-          fetched.current.delete(key); // allow retry on next change
-          if (!cancelled)
-            setSummaries((s) => ({
-              ...s,
-              [key]: {
-                loading: false,
-                text: "",
-                error: e instanceof Error ? e.message : "Summary failed",
-              },
-            }));
-        });
-    }
-    return () => {
-      cancelled = true;
-    };
+      .catch((e) => {
+        fetched.current.delete(key); // allow retry
+        setSummaries((s) => ({
+          ...s,
+          [key]: {
+            loading: false,
+            text: "",
+            error: e instanceof Error ? e.message : "Couldn't generate a summary.",
+          },
+        }));
+      });
+  }
+
+  useEffect(() => {
+    for (const sec of sections) runSummary(sec);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [[...sectionKeys].sort().join(","), selectedIdsKey, districts]);
 
@@ -216,6 +215,7 @@ export default function ComparePage() {
                   rowFor={rowFor}
                   summary={summaries[`${sec.key}|${selectedIdsKey}`]}
                   onOpen={(district, section) => setDrawer({ district, section })}
+                  onRetry={() => runSummary(sec, true)}
                 />
               ))}
             </tbody>
@@ -241,12 +241,14 @@ function SectionRow({
   rowFor,
   summary,
   onOpen,
+  onRetry,
 }: {
   section: TaxonomySection;
   districts: District[];
   rowFor: (d: District, key: string) => ParsedSection | null;
   summary?: SummaryState;
   onOpen: (d: District, s: ParsedSection) => void;
+  onRetry: () => void;
 }) {
   const cells = districts.map((d) => ({ d, sec: rowFor(d, section.key) }));
 
@@ -326,7 +328,12 @@ function SectionRow({
           ) : summary.loading ? (
             <span>reading the values…</span>
           ) : summary.error ? (
-            <span className="text-[var(--color-flag)]">{summary.error}</span>
+            <span className="text-[var(--color-flag)]">
+              {summary.error}{" "}
+              <button onClick={onRetry} className="font-medium underline">
+                Retry
+              </button>
+            </span>
           ) : (
             <span>{summary.text}</span>
           )}

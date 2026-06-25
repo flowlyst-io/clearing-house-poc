@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAnthropic, PARSE_MODEL } from "@/lib/anthropic";
+import { classifyError } from "@/lib/apiError";
 import { TAXONOMY } from "@/lib/taxonomy";
 import type { ParseResult, ParsedSection } from "@/lib/types";
 
@@ -25,7 +26,10 @@ export async function POST(req: NextRequest) {
 
     if (!text || text.trim().length < 200) {
       return NextResponse.json(
-        { error: "Provide the contract text (at least a couple hundred characters)." },
+        {
+          error: "Provide the contract text (at least a couple hundred characters).",
+          retryable: false,
+        },
         { status: 400 },
       );
     }
@@ -153,7 +157,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const { status, body } = classifyError(err);
+    return NextResponse.json(body, { status });
   }
 }

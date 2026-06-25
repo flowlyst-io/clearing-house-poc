@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAnthropic, SUMMARIZE_MODEL } from "@/lib/anthropic";
+import { classifyError } from "@/lib/apiError";
 import { TAXONOMY_BY_KEY } from "@/lib/taxonomy";
 
 export const runtime = "nodejs";
@@ -25,7 +26,10 @@ export async function POST(req: NextRequest) {
     const section = TAXONOMY_BY_KEY[taxonomyKey];
     if (!section || !Array.isArray(items) || items.length === 0) {
       return NextResponse.json(
-        { error: "taxonomyKey and a non-empty items array are required." },
+        {
+          error: "taxonomyKey and a non-empty items array are required.",
+          retryable: false,
+        },
         { status: 400 },
       );
     }
@@ -76,7 +80,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ synthesis: parsed.synthesis ?? "" });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const { status, body } = classifyError(err);
+    return NextResponse.json(body, { status });
   }
 }

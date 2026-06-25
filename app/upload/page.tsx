@@ -18,12 +18,17 @@ export default function UploadPage() {
   const [meta, setMeta] = useState<{ pages?: number; chars: number }>({
     chars: 0,
   });
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ message: string; retryable: boolean } | null>(
+    null,
+  );
 
   async function handleFile(file: File) {
-    setError("");
+    setError(null);
     if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      setError("Please choose a PDF, or paste the contract text below.");
+      setError({
+        message: "Please choose a PDF, or paste the contract text below.",
+        retryable: false,
+      });
       return;
     }
     if (!districtName) {
@@ -37,16 +42,18 @@ export default function UploadPage() {
       setMeta({ pages, chars: extracted.length });
       setPhase("ready");
     } catch (e) {
-      setError(
-        (e instanceof Error ? e.message : "Could not read the PDF") +
+      setError({
+        message:
+          (e instanceof Error ? e.message : "Could not read the PDF") +
           " — you can paste the text instead.",
-      );
+        retryable: false,
+      });
       setPhase("error");
     }
   }
 
   async function parse() {
-    setError("");
+    setError(null);
     setPhase("parsing");
     try {
       const res = await fetch("/api/parse", {
@@ -54,8 +61,18 @@ export default function UploadPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, districtName: districtName || undefined }),
       });
-      const data = (await res.json()) as ParseResult & { error?: string };
-      if (!res.ok) throw new Error(data.error || "Parse failed");
+      const data = (await res.json()) as ParseResult & {
+        error?: string;
+        retryable?: boolean;
+      };
+      if (!res.ok) {
+        setError({
+          message: data.error || "Parse failed",
+          retryable: !!data.retryable,
+        });
+        setPhase("error");
+        return;
+      }
 
       const district: District = {
         id: `parsed-${Date.now()}`,
@@ -69,8 +86,12 @@ export default function UploadPage() {
       };
       addDistrict(district);
       router.push(`/review?d=${district.id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Parse failed");
+    } catch {
+      // fetch threw before any response — almost always transient/network.
+      setError({
+        message: "Couldn't reach the parser. Check your connection and try again.",
+        retryable: true,
+      });
       setPhase("error");
     }
   }
@@ -153,8 +174,17 @@ export default function UploadPage() {
       </div>
 
       {error && (
-        <div className="rounded-md bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
-          {error}
+        <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
+          <span>{error.message}</span>
+          {error.retryable && (
+            <button
+              onClick={parse}
+              disabled={phase === "parsing"}
+              className="shrink-0 rounded-md border border-[var(--color-flag)] px-2 py-1 text-xs font-medium hover:bg-white/40 disabled:opacity-40"
+            >
+              Retry
+            </button>
+          )}
         </div>
       )}
 
