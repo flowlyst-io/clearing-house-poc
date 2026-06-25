@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useDistricts } from "@/lib/store";
 import { TAXONOMY, TAXONOMY_BY_KEY } from "@/lib/taxonomy";
+import type { TaxonomySection } from "@/lib/taxonomy";
 import type { District, ParsedSection } from "@/lib/types";
 import {
   parseNumeric,
@@ -12,120 +13,109 @@ import {
   highlightNumbers,
 } from "@/lib/values";
 
+const DEFAULT_SECTIONS = ["bereavement", "sick_leave", "salary_schedule"];
+
+interface SummaryState {
+  loading: boolean;
+  text: string;
+  error: string | null;
+}
+
 export default function ComparePage() {
   const districts = useDistricts();
   const pool = useMemo(() => districts.filter((d) => d.inPool), [districts]);
 
-  const [sectionKey, setSectionKey] = useState("bereavement");
+  // Both sections and districts are now multi-select.
+  const [sectionKeys, setSectionKeys] = useState<Set<string>>(
+    new Set(DEFAULT_SECTIONS),
+  );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [drawer, setDrawer] = useState<{
     district: District;
     section: ParsedSection;
   } | null>(null);
 
-  // Keep the selection sensible as the pool changes: drop districts that left,
-  // auto-select any that newly arrived (e.g. a contract just confirmed in Review),
-  // and select everything on first load — while preserving deliberate deselections.
+  // Keep district selection sensible as the pool changes (auto-select arrivals,
+  // preserve deliberate deselections — StrictMode-safe: ref written in the effect
+  // body, not inside the setState updater).
   const seenIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     const ids = pool.map((d) => d.id);
-    // Compute "newly arrived" and update the ref here in the effect body — NOT
-    // inside the setState updater, which StrictMode double-invokes (a ref write
-    // there would make the updater impure and drop the new district).
     const known = seenIds.current;
     const newly = ids.filter((id) => !known.has(id));
     seenIds.current = new Set(ids);
     setSelected((prev) => {
       const next = new Set([...prev].filter((id) => ids.includes(id)));
-      newly.forEach((id) => next.add(id)); // auto-select arrivals (incl. first load)
+      newly.forEach((id) => next.add(id));
       if (next.size === 0) ids.forEach((id) => next.add(id));
       return next;
     });
   }, [pool]);
 
-  const section = TAXONOMY_BY_KEY[sectionKey];
   const chosen = pool.filter((d) => selected.has(d.id));
+  // Render rows in canonical taxonomy order, not click order — stable & scannable.
+  const sections = TAXONOMY.filter((s) => sectionKeys.has(s.key));
 
-  // For each chosen district, the section row (may be missing).
-  const rows = chosen.map((d) => ({
-    district: d,
-    section: d.sections.find((s) => s.taxonomyKey === sectionKey) ?? null,
-  }));
+  function toggle(set: Set<string>, id: string): Set<string> {
+    const next = new Set(set);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  }
 
-  // Deterministic stats — computed here, never by the model.
-  const stats = useMemo(() => {
-    if (section.valueKind === "text") return null;
-    const points = rows
-      .filter((r) => r.section)
-      .map((r) => ({
-        name: r.district.name,
-        n: parseNumeric(section.valueKind, r.section!.extractedValue),
-      }))
-      .filter((p): p is { name: string; n: number } => p.n !== null);
-    if (points.length < 2) return null;
-    const sorted = [...points].sort((a, b) => a.n - b.n);
-    return {
-      min: sorted[0],
-      max: sorted[sorted.length - 1],
-      med: median(points.map((p) => p.n)),
-      kind: section.valueKind,
-    };
-  }, [rows, section]);
+  // ---- AI summaries, one per section row, fetched on demand and cached ----
+  const [summaries, setSummaries] = useState<Record<string, SummaryState>>({});
+  const fetched = useRef<Set<string>>(new Set());
+  const selectedIdsKey = [...selected].sort().join(",");
 
-  // AI synthesis sentence.
-  const [synthesis, setSynthesis] = useState<{
-    loading: boolean;
-    text: string;
-    error: string | null;
-  }>({ loading: false, text: "", error: null });
+  function rowFor(d: District, key: string): ParsedSection | null {
+    return d.sections.find((s) => s.taxonomyKey === key) ?? null;
+  }
 
   useEffect(() => {
-    const items = rows
-      .filter((r) => r.section)
-      .map((r) => ({
-        districtName: r.district.name,
-        value: r.section!.extractedValue,
-      }));
-    if (items.length < 2) {
-      setSynthesis({ loading: false, text: "", error: null });
-      return;
-    }
     let cancelled = false;
-    setSynthesis({ loading: true, text: "", error: null });
-    const t = setTimeout(async () => {
-      try {
-        const res = await fetch("/api/summarize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ taxonomyKey: sectionKey, items }),
+    const sortedIds = [...selected].sort();
+    for (const sec of sections) {
+      const items = chosen
+        .map((d) => ({ d, sec: rowFor(d, sec.key) }))
+        .filter((x) => x.sec)
+        .map((x) => ({ districtName: x.d.name, value: x.sec!.extractedValue }));
+      if (items.length < 2) continue;
+      const key = `${sec.key}|${sortedIds.join(",")}`;
+      if (fetched.current.has(key)) continue;
+      fetched.current.add(key);
+      setSummaries((s) => ({ ...s, [key]: { loading: true, text: "", error: null } }));
+      fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taxonomyKey: sec.key, items }),
+      })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Summary failed");
+          if (!cancelled)
+            setSummaries((s) => ({
+              ...s,
+              [key]: { loading: false, text: data.synthesis, error: null },
+            }));
+        })
+        .catch((e) => {
+          fetched.current.delete(key); // allow retry on next change
+          if (!cancelled)
+            setSummaries((s) => ({
+              ...s,
+              [key]: {
+                loading: false,
+                text: "",
+                error: e instanceof Error ? e.message : "Summary failed",
+              },
+            }));
         });
-        const data = await res.json();
-        if (cancelled) return;
-        if (!res.ok) throw new Error(data.error || "Summary failed");
-        setSynthesis({ loading: false, text: data.synthesis, error: null });
-      } catch (e) {
-        if (cancelled) return;
-        setSynthesis({
-          loading: false,
-          text: "",
-          error: e instanceof Error ? e.message : "Summary failed",
-        });
-      }
-    }, 250);
+    }
     return () => {
       cancelled = true;
-      clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectionKey, JSON.stringify([...selected]), districts]);
-
-  function toggle(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }
+  }, [[...sectionKeys].sort().join(","), selectedIdsKey, districts]);
 
   return (
     <div className="space-y-6">
@@ -133,8 +123,8 @@ export default function ComparePage() {
         <div>
           <h1 className="text-xl font-semibold">Compare districts</h1>
           <p className="text-sm text-[var(--color-muted)]">
-            Pick a section and the districts to compare. Click any value to read
-            the source language.
+            Pick one or more sections and districts. Click any value to read the
+            source language.
           </p>
         </div>
         {pool.length === 0 && (
@@ -147,120 +137,157 @@ export default function ComparePage() {
         )}
       </div>
 
-      {/* Section selector */}
-      <div>
-        <label className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
-          Section
-        </label>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {TAXONOMY.map((s) => (
-            <button
-              key={s.key}
-              onClick={() => setSectionKey(s.key)}
-              className={`rounded-full border px-3 py-1 text-sm transition-colors ${
-                s.key === sectionKey
-                  ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
-                  : "border-[var(--color-line)] bg-[var(--color-surface)] hover:bg-[var(--color-canvas)]"
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* Section multi-select */}
+      <Picker
+        label="Sections"
+        count={`${sections.length}/${TAXONOMY.length}`}
+        onAll={() => setSectionKeys(new Set(TAXONOMY.map((s) => s.key)))}
+        onClear={() => setSectionKeys(new Set())}
+      >
+        {TAXONOMY.map((s) => (
+          <Chip
+            key={s.key}
+            active={sectionKeys.has(s.key)}
+            activeClass="border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+            onClick={() => setSectionKeys((prev) => toggle(prev, s.key))}
+          >
+            {s.label}
+          </Chip>
+        ))}
+      </Picker>
 
-      {/* District selector */}
+      {/* District multi-select */}
       {pool.length > 0 && (
-        <div>
-          <label className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
-            Districts ({chosen.length}/{pool.length})
-          </label>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {pool.map((d) => (
-              <button
-                key={d.id}
-                onClick={() => toggle(d.id)}
-                className={`rounded-md border px-3 py-1 text-sm transition-colors ${
-                  selected.has(d.id)
-                    ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-white"
-                    : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
-                }`}
-              >
-                {d.name}
-              </button>
-            ))}
-          </div>
+        <Picker
+          label="Districts"
+          count={`${chosen.length}/${pool.length}`}
+          onAll={() => setSelected(new Set(pool.map((d) => d.id)))}
+          onClear={() => setSelected(new Set())}
+        >
+          {pool.map((d) => (
+            <Chip
+              key={d.id}
+              active={selected.has(d.id)}
+              activeClass="border-[var(--color-ink)] bg-[var(--color-ink)] text-white"
+              onClick={() => setSelected((prev) => toggle(prev, d.id))}
+            >
+              {d.name}
+            </Chip>
+          ))}
+        </Picker>
+      )}
+
+      {/* Matrix */}
+      {sections.length === 0 || chosen.length === 0 ? (
+        <p className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
+          {sections.length === 0
+            ? "Select at least one section above."
+            : "Select at least one district above."}
+        </p>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)]">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-[var(--color-line)]">
+                <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left font-medium">
+                  Section
+                </th>
+                {chosen.map((d) => (
+                  <th
+                    key={d.id}
+                    className="min-w-44 px-4 py-3 text-left align-bottom font-semibold"
+                  >
+                    {d.name}
+                    {d.term && (
+                      <div className="text-xs font-normal text-[var(--color-muted)]">
+                        {d.term}
+                      </div>
+                    )}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sections.map((sec) => (
+                <SectionRow
+                  key={sec.key}
+                  section={sec}
+                  districts={chosen}
+                  rowFor={rowFor}
+                  summary={summaries[`${sec.key}|${selectedIdsKey}`]}
+                  onOpen={(district, section) => setDrawer({ district, section })}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
-      {/* Summary */}
-      <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5">
-        <div className="flex items-center gap-2">
-          <h2 className="font-semibold">{section.label}</h2>
-          <span className="text-sm text-[var(--color-muted)]">
-            — {section.description}
-          </span>
-        </div>
+      {drawer && (
+        <SourceDrawer
+          districtName={drawer.district.name}
+          sectionLabel={TAXONOMY_BY_KEY[drawer.section.taxonomyKey]?.label ?? ""}
+          section={drawer.section}
+          onClose={() => setDrawer(null)}
+        />
+      )}
+    </div>
+  );
+}
 
-        {stats ? (
-          <div className="mt-4 grid grid-cols-3 gap-3 sm:max-w-md">
-            <Stat
-              label="Lowest"
-              value={formatValue(stats.kind, stats.min.n)}
-              sub={stats.min.name}
-            />
-            <Stat label="Median" value={formatValue(stats.kind, stats.med)} />
-            <Stat
-              label="Highest"
-              value={formatValue(stats.kind, stats.max.n)}
-              sub={stats.max.name}
-            />
-          </div>
-        ) : (
-          <p className="mt-3 text-sm text-[var(--color-muted)]">
-            {section.valueKind === "text"
-              ? "This section compares best by reading the language — see the cards below."
-              : "Select at least two districts that have this section to see min / median / max."}
-          </p>
-        )}
+function SectionRow({
+  section,
+  districts,
+  rowFor,
+  summary,
+  onOpen,
+}: {
+  section: TaxonomySection;
+  districts: District[];
+  rowFor: (d: District, key: string) => ParsedSection | null;
+  summary?: SummaryState;
+  onOpen: (d: District, s: ParsedSection) => void;
+}) {
+  const cells = districts.map((d) => ({ d, sec: rowFor(d, section.key) }));
 
-        <div className="mt-4 rounded-lg bg-[var(--color-accent-soft)] p-3 text-sm">
-          <span className="font-medium text-[var(--color-accent)]">
-            AI summary{" "}
-          </span>
-          {synthesis.loading ? (
-            <span className="text-[var(--color-muted)]">reading the values…</span>
-          ) : synthesis.error ? (
-            <span className="text-[var(--color-flag)]">{synthesis.error}</span>
-          ) : synthesis.text ? (
-            <span>{synthesis.text}</span>
-          ) : (
-            <span className="text-[var(--color-muted)]">
-              Select two or more districts to generate a summary.
-            </span>
-          )}
-        </div>
-      </div>
+  // Per-row stats from numeric values.
+  const stats = (() => {
+    if (section.valueKind === "text") return null;
+    const nums = cells
+      .filter((c) => c.sec)
+      .map((c) => parseNumeric(section.valueKind, c.sec!.extractedValue))
+      .filter((n): n is number => n !== null);
+    if (nums.length < 2) return null;
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    return `${formatValue(section.valueKind, min)}–${formatValue(
+      section.valueKind,
+      max,
+    )} · median ${formatValue(section.valueKind, median(nums))}`;
+  })();
 
-      {/* Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {rows.map(({ district, section: sec }) => (
-          <div
-            key={district.id}
-            className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5"
-          >
-            <div className="flex items-baseline justify-between">
-              <h3 className="font-semibold">{district.name}</h3>
-              {district.term && (
-                <span className="text-xs text-[var(--color-muted)]">
-                  {district.term}
-                </span>
-              )}
+  const colSpan = districts.length + 1;
+
+  return (
+    <>
+      <tr className="border-t border-[var(--color-line)] align-top">
+        <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left">
+          <div className="font-semibold">{section.label}</div>
+          {stats && (
+            <div className="mt-0.5 text-xs font-normal text-[var(--color-muted)]">
+              {stats}
             </div>
-
+          )}
+        </th>
+        {cells.map(({ d, sec }) => (
+          <td key={d.id} className="px-4 py-3">
             {sec ? (
-              <>
-                <div className="mt-3 text-lg font-semibold leading-snug">
+              <button
+                onClick={() => onOpen(d, sec)}
+                className="text-left hover:underline"
+                title="View source language"
+              >
+                <span className="font-medium">
                   {highlightNumbers(sec.extractedValue).map((p, i) =>
                     p.isNumber ? (
                       <span
@@ -273,64 +300,101 @@ export default function ComparePage() {
                       <span key={i}>{p.text}</span>
                     ),
                   )}
-                </div>
-                <div className="mt-3 flex items-center gap-2">
-                  {sec.status === "flagged" && (
-                    <span className="rounded bg-[var(--color-flag-soft)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-flag)]">
-                      needs review
-                    </span>
-                  )}
-                  <button
-                    onClick={() => setDrawer({ district, section: sec })}
-                    className="text-sm font-medium text-[var(--color-accent)] hover:underline"
-                  >
-                    View source language →
-                  </button>
-                </div>
-              </>
+                </span>
+                {sec.status === "flagged" && (
+                  <span className="ml-1 align-middle text-[11px] font-medium text-[var(--color-flag)]">
+                    ⚑
+                  </span>
+                )}
+              </button>
             ) : (
-              <p className="mt-3 text-sm text-[var(--color-muted)]">
-                Not found in this contract.
-              </p>
+              <span className="text-[var(--color-muted)]">—</span>
             )}
-          </div>
+          </td>
         ))}
-        {chosen.length === 0 && pool.length > 0 && (
-          <p className="text-sm text-[var(--color-muted)]">
-            Select one or more districts above.
-          </p>
-        )}
-      </div>
+      </tr>
+      <tr className="bg-[var(--color-accent-soft)]/40">
+        <td
+          colSpan={colSpan}
+          className="px-4 pb-3 text-sm text-[var(--color-muted)]"
+        >
+          <span className="font-medium text-[var(--color-accent)]">
+            AI summary{" "}
+          </span>
+          {!summary ? (
+            <span>select two or more districts with this section.</span>
+          ) : summary.loading ? (
+            <span>reading the values…</span>
+          ) : summary.error ? (
+            <span className="text-[var(--color-flag)]">{summary.error}</span>
+          ) : (
+            <span>{summary.text}</span>
+          )}
+        </td>
+      </tr>
+    </>
+  );
+}
 
-      {drawer && (
-        <SourceDrawer
-          districtName={drawer.district.name}
-          sectionLabel={section.label}
-          section={drawer.section}
-          onClose={() => setDrawer(null)}
-        />
-      )}
+function Picker({
+  label,
+  count,
+  onAll,
+  onClear,
+  children,
+}: {
+  label: string;
+  count: string;
+  onAll: () => void;
+  onClear: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-3">
+        <label className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
+          {label} ({count})
+        </label>
+        <button
+          onClick={onAll}
+          className="text-xs text-[var(--color-accent)] hover:underline"
+        >
+          All
+        </button>
+        <button
+          onClick={onClear}
+          className="text-xs text-[var(--color-muted)] hover:underline"
+        >
+          Clear
+        </button>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">{children}</div>
     </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  sub,
+function Chip({
+  active,
+  activeClass,
+  onClick,
+  children,
 }: {
-  label: string;
-  value: string;
-  sub?: string;
+  active: boolean;
+  activeClass: string;
+  onClick: () => void;
+  children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-[var(--color-line)] p-3">
-      <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">
-        {label}
-      </div>
-      <div className="mt-0.5 text-lg font-semibold">{value}</div>
-      {sub && <div className="text-xs text-[var(--color-muted)]">{sub}</div>}
-    </div>
+    <button
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1 text-sm transition-colors ${
+        active
+          ? activeClass
+          : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -347,11 +411,7 @@ function SourceDrawer({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
-      <div
-        className="absolute inset-0 bg-black/30"
-        onClick={onClose}
-        aria-hidden
-      />
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden />
       <div className="relative h-full w-full max-w-md overflow-y-auto border-l border-[var(--color-line)] bg-[var(--color-surface)] p-6 shadow-xl">
         <div className="flex items-start justify-between">
           <div>
