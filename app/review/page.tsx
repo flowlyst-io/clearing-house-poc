@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useDistricts, updateDistrict, removeDistrict } from "@/lib/store";
 import { TAXONOMY, sectionLabel } from "@/lib/taxonomy";
 import type { District, ParsedSection, UnmatchedSection } from "@/lib/types";
+import { buildSegments, type AnchorItem } from "@/lib/anchor";
 
 export default function ReviewPage() {
   return (
@@ -20,7 +21,6 @@ function ReviewInner() {
   const params = useSearchParams();
   const router = useRouter();
 
-  // Districts that still want a human: not yet pooled, or have flagged/unmatched.
   const needsReview = useMemo(
     () =>
       districts.filter(
@@ -78,6 +78,46 @@ function ReviewInner() {
   );
 }
 
+// ---- one reviewable thing (a parsed section OR an uncategorized snippet) ----
+type Item =
+  | {
+      id: string;
+      kind: "section";
+      index: number;
+      section: ParsedSection;
+      query: string;
+    }
+  | {
+      id: string;
+      kind: "unmatched";
+      index: number;
+      unmatched: UnmatchedSection;
+      query: string;
+    };
+
+function toneOf(it: Item) {
+  if (it.kind === "unmatched")
+    return {
+      mark: "bg-[#ede9fe] text-[#5b21b6]",
+      ring: "ring-[#7c3aed]",
+      dot: "bg-[#7c3aed]",
+      label: "uncategorized",
+    };
+  return it.section.status === "confirmed"
+    ? {
+        mark: "bg-[var(--color-ok-soft)] text-[var(--color-ok)]",
+        ring: "ring-[var(--color-ok)]",
+        dot: "bg-[var(--color-ok)]",
+        label: "confirmed",
+      }
+    : {
+        mark: "bg-[var(--color-flag-soft)] text-[var(--color-flag)]",
+        ring: "ring-[var(--color-flag)]",
+        dot: "bg-[var(--color-flag)]",
+        label: "needs review",
+      };
+}
+
 function DistrictReview({
   district,
   router,
@@ -85,26 +125,59 @@ function DistrictReview({
   district: District;
   router: ReturnType<typeof useRouter>;
 }) {
-  const flagged = district.sections
-    .map((s, i) => ({ s, i }))
-    .filter((x) => x.s.status === "flagged");
-  const confirmed = district.sections
-    .map((s, i) => ({ s, i }))
-    .filter((x) => x.s.status === "confirmed");
-  const unmatched = district.unmatched ?? [];
+  const [active, setActive] = useState<string | null>(null);
 
+  const items: Item[] = [
+    ...district.sections.map((section, index) => ({
+      id: `s:${index}`,
+      kind: "section" as const,
+      index,
+      section,
+      query: section.anchor || section.sourceText.slice(0, 80),
+    })),
+    ...(district.unmatched ?? []).map((unmatched, index) => ({
+      id: `u:${index}`,
+      kind: "unmatched" as const,
+      index,
+      unmatched,
+      query: unmatched.anchor || unmatched.sourceText.slice(0, 80),
+    })),
+  ];
+  const byId = new Map(items.map((it) => [it.id, it]));
+
+  const pages = district.pages ?? [];
+  const hasDoc = pages.length > 0;
+  const anchorItems: AnchorItem[] = items.map((it) => ({
+    id: it.id,
+    query: it.query,
+  }));
+  const perPage = pages.map((p) => buildSegments(p, anchorItems));
+  const placed = new Set<string>();
+  perPage.forEach((pp) => pp.placed.forEach((id) => placed.add(id)));
+
+  const flagged = items.filter(
+    (it) => it.kind === "section" && it.section.status === "flagged",
+  );
+  const confirmed = items.filter(
+    (it) => it.kind === "section" && it.section.status === "confirmed",
+  );
+  const uncategorized = items.filter((it) => it.kind === "unmatched");
+  const totalSections = district.sections.length;
+
+  // ---- mutations (reused from the prior card-based review) ----
   function patchSection(index: number, patch: Partial<ParsedSection>) {
-    const sections = district.sections.map((s, i) =>
-      i === index ? { ...s, ...patch } : s,
-    );
-    updateDistrict(district.id, { sections });
+    updateDistrict(district.id, {
+      sections: district.sections.map((s, i) =>
+        i === index ? { ...s, ...patch } : s,
+      ),
+    });
   }
-
   function assignUnmatched(u: UnmatchedSection, taxonomyKey: string) {
     const newSection: ParsedSection = {
       taxonomyKey,
       extractedValue: "",
       sourceText: u.sourceText,
+      anchor: u.anchor,
       confidence: 1,
       status: "flagged",
       note: "Assigned from uncategorized — set the value, then confirm.",
@@ -113,19 +186,18 @@ function DistrictReview({
       sections: [...district.sections, newSection],
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
     });
+    setActive(null);
   }
-
   function dismissUnmatched(u: UnmatchedSection) {
     updateDistrict(district.id, {
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
     });
+    setActive(null);
   }
-
   function addToPool() {
     updateDistrict(district.id, { inPool: true });
     router.push("/compare");
   }
-
   function discard() {
     if (confirm(`Remove ${district.name} from the workspace?`)) {
       removeDistrict(district.id);
@@ -133,15 +205,110 @@ function DistrictReview({
     }
   }
 
+  function focus(id: string) {
+    setActive(id);
+    if (hasDoc && placed.has(id)) {
+      requestAnimationFrame(() =>
+        document
+          .getElementById(`hl-${id}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      );
+    }
+  }
+
+  function renderControls(it: Item) {
+    if (it.kind === "section") {
+      const s = it.section;
+      return (
+        <div className="space-y-2">
+          <select
+            value={s.taxonomyKey}
+            onChange={(e) => patchSection(it.index, { taxonomyKey: e.target.value })}
+            className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+          >
+            {TAXONOMY.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+          <input
+            value={s.extractedValue}
+            onChange={(e) => patchSection(it.index, { extractedValue: e.target.value })}
+            placeholder="Value (e.g. 5 days)"
+            className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+          />
+          <div className="flex gap-2">
+            {s.status === "flagged" ? (
+              <button
+                disabled={!s.extractedValue.trim()}
+                onClick={() => patchSection(it.index, { status: "confirmed", note: undefined })}
+                className="rounded-md bg-[var(--color-ok)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+              >
+                Confirm
+              </button>
+            ) : (
+              <button
+                onClick={() => patchSection(it.index, { status: "flagged", note: "Re-opened." })}
+                className="rounded-md border border-[var(--color-line)] px-3 py-1.5 text-xs"
+              >
+                Re-open
+              </button>
+            )}
+            <button
+              onClick={() => setActive(null)}
+              className="rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      );
+    }
+    const u = it.unmatched;
+    return (
+      <div className="space-y-2">
+        <div className="text-sm font-medium">{u.label}</div>
+        <select
+          defaultValue=""
+          onChange={(e) => e.target.value && assignUnmatched(u, e.target.value)}
+          className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+        >
+          <option value="">Assign to section…</option>
+          {TAXONOMY.map((t) => (
+            <option key={t.key} value={t.key}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+        <div className="flex gap-2">
+          <button
+            onClick={() => dismissUnmatched(u)}
+            className="rounded-md border border-[var(--color-line)] px-3 py-1.5 text-xs text-[var(--color-muted)]"
+          >
+            Dismiss
+          </button>
+          <button
+            onClick={() => setActive(null)}
+            className="rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">{district.name}</h1>
           <p className="text-sm text-[var(--color-muted)]">
             {district.term ? `${district.term} · ` : ""}
-            {district.inPool ? "In comparison pool" : "Not yet in pool"} ·{" "}
-            {flagged.length} need review · {unmatched.length} uncategorized
+            {confirmed.length}/{totalSections} sections confirmed ·{" "}
+            {flagged.length} need review · {uncategorized.length} uncategorized
           </p>
         </div>
         <div className="flex gap-2">
@@ -156,256 +323,199 @@ function DistrictReview({
             className="rounded-md bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white"
           >
             {district.inPool ? "Done" : "Add to comparison pool"}
-            {flagged.length > 0 && !district.inPool
-              ? ` (${flagged.length} still flagged)`
-              : ""}
+            {flagged.length > 0 && !district.inPool ? ` (${flagged.length} flagged)` : ""}
           </button>
         </div>
       </div>
 
-      {/* Needs review */}
-      <section>
-        <SectionHeading
-          tone="flag"
-          title="Needs review"
-          count={flagged.length}
-          blurb="The AI was unsure, or you just assigned these. Set the value, fix the section if it's mislabeled, then confirm."
-        />
-        {flagged.length === 0 ? (
-          <Empty>Nothing flagged. </Empty>
-        ) : (
-          <div className="space-y-3">
-            {flagged.map(({ s, i }) => (
-              <FlaggedCard
-                key={i}
-                section={s}
-                onChange={(patch) => patchSection(i, patch)}
-                onConfirm={() =>
-                  patchSection(i, { status: "confirmed", note: undefined })
-                }
-              />
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 text-xs text-[var(--color-muted)]">
+        <Legend dot="bg-[var(--color-ok)]" label="Confirmed" />
+        <Legend dot="bg-[var(--color-flag)]" label="Needs review" />
+        <Legend dot="bg-[#7c3aed]" label="Uncategorized" />
+        <span>Click any highlight (or an item on the right) to review it.</span>
+      </div>
+
+      <div className="flex flex-col gap-6 lg:flex-row">
+        {/* Document reader */}
+        {hasDoc ? (
+          <div className="min-w-0 flex-1 space-y-4">
+            {pages.map((pageText, pi) => (
+              <div
+                key={pi}
+                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5"
+              >
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
+                  Page {pi + 1}
+                </div>
+                <div className="text-sm leading-relaxed">
+                  {perPage[pi].segments.map((seg, si) => {
+                    if (!seg.itemId) return <span key={si}>{seg.text}</span>;
+                    const it = byId.get(seg.itemId);
+                    if (!it) return <span key={si}>{seg.text}</span>;
+                    const tone = toneOf(it);
+                    const isActive = active === it.id;
+                    return (
+                      <span key={si} className="relative">
+                        <mark
+                          id={`hl-${it.id}`}
+                          onClick={() => setActive(isActive ? null : it.id)}
+                          className={`cursor-pointer rounded px-0.5 ${tone.mark} ${
+                            isActive ? `ring-2 ${tone.ring}` : ""
+                          }`}
+                          title="Review this"
+                        >
+                          {seg.text}
+                        </mark>
+                        {isActive && (
+                          <span className="absolute left-0 top-full z-30 mt-1 block w-72 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] p-3 text-[var(--color-ink)] shadow-xl">
+                            {renderControls(it)}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
             ))}
+          </div>
+        ) : (
+          <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
+            No document text is stored for this contract (it was added before the
+            reader, or is seed data). Review the items on the right; re-upload the
+            PDF to see the full document view.
           </div>
         )}
-      </section>
 
-      {/* Uncategorized */}
-      {unmatched.length > 0 && (
-        <section>
-          <SectionHeading
-            tone="flag"
-            title="Uncategorized"
-            count={unmatched.length}
-            blurb="Content the AI found but couldn't place in the standard sections. Assign it to a section, or dismiss it."
+        {/* Click-away layer for an open in-document popover */}
+        {active && hasDoc && placed.has(active) && (
+          <div className="fixed inset-0 z-20" onClick={() => setActive(null)} aria-hidden />
+        )}
+
+        {/* Synced index */}
+        <aside className="space-y-4 lg:sticky lg:top-6 lg:max-h-[calc(100vh-5rem)] lg:w-80 lg:shrink-0 lg:self-start lg:overflow-y-auto">
+          <IndexGroup
+            title="Needs review"
+            items={flagged}
+            active={active}
+            placed={placed}
+            hasDoc={hasDoc}
+            onFocus={focus}
+            renderControls={renderControls}
           />
-          <div className="space-y-3">
-            {unmatched.map((u, idx) => (
-              <UnmatchedCard
-                key={idx}
-                u={u}
-                onAssign={(key) => assignUnmatched(u, key)}
-                onDismiss={() => dismissUnmatched(u)}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Confirmed */}
-      <section>
-        <SectionHeading
-          tone="ok"
-          title="Confirmed"
-          count={confirmed.length}
-          blurb="These will show in Compare."
-        />
-        <div className="divide-y divide-[var(--color-line)] rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)]">
-          {confirmed.map(({ s, i }) => (
-            <ConfirmedRow
-              key={i}
-              section={s}
-              onReassign={(key) => patchSection(i, { taxonomyKey: key })}
-              onUnconfirm={() =>
-                patchSection(i, { status: "flagged", note: "Re-opened." })
-              }
-            />
-          ))}
-          {confirmed.length === 0 && <Empty>None yet.</Empty>}
-        </div>
-      </section>
+          <IndexGroup
+            title="Uncategorized"
+            items={uncategorized}
+            active={active}
+            placed={placed}
+            hasDoc={hasDoc}
+            onFocus={focus}
+            renderControls={renderControls}
+          />
+          <IndexGroup
+            title="Confirmed"
+            items={confirmed}
+            active={active}
+            placed={placed}
+            hasDoc={hasDoc}
+            onFocus={focus}
+            renderControls={renderControls}
+          />
+        </aside>
+      </div>
     </div>
   );
 }
 
-function SectionHeading({
+function Legend({ dot, label }: { dot: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className={`h-2.5 w-2.5 rounded-full ${dot}`} />
+      {label}
+    </span>
+  );
+}
+
+function IndexGroup({
   title,
-  count,
-  blurb,
-  tone,
+  items,
+  active,
+  placed,
+  hasDoc,
+  onFocus,
+  renderControls,
 }: {
   title: string;
-  count: number;
-  blurb: string;
-  tone: "flag" | "ok";
+  items: Item[];
+  active: string | null;
+  placed: Set<string>;
+  hasDoc: boolean;
+  onFocus: (id: string) => void;
+  renderControls: (it: Item) => React.ReactNode;
 }) {
   return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2">
-        <h2 className="font-semibold">{title}</h2>
-        <span
-          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-            tone === "flag"
-              ? "bg-[var(--color-flag-soft)] text-[var(--color-flag)]"
-              : "bg-[var(--color-ok-soft)] text-[var(--color-ok)]"
-          }`}
-        >
-          {count}
+    <div>
+      <div className="mb-1.5 flex items-center gap-2">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
+          {title}
+        </h2>
+        <span className="rounded-full bg-[var(--color-canvas)] px-1.5 text-xs text-[var(--color-muted)]">
+          {items.length}
         </span>
       </div>
-      <p className="text-sm text-[var(--color-muted)]">{blurb}</p>
-    </div>
-  );
-}
-
-function TaxonomySelect({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value?: string;
-  onChange: (key: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <select
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
-    >
-      {placeholder && <option value="">{placeholder}</option>}
-      {TAXONOMY.map((t) => (
-        <option key={t.key} value={t.key}>
-          {t.label}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function FlaggedCard({
-  section,
-  onChange,
-  onConfirm,
-}: {
-  section: ParsedSection;
-  onChange: (patch: Partial<ParsedSection>) => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="rounded-xl border border-[var(--color-flag)]/40 bg-[var(--color-flag-soft)] p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <TaxonomySelect
-          value={section.taxonomyKey}
-          onChange={(key) => onChange({ taxonomyKey: key })}
-        />
-        <span className="text-xs text-[var(--color-muted)]">
-          confidence {Math.round(section.confidence * 100)}%
-        </span>
-      </div>
-      {section.note && (
-        <p className="mt-2 text-xs text-[var(--color-flag)]">{section.note}</p>
+      {items.length === 0 ? (
+        <p className="px-2 text-xs text-[var(--color-muted)]">None.</p>
+      ) : (
+        <div className="space-y-1">
+          {items.map((it) => {
+            const tone = toneOf(it);
+            const label =
+              it.kind === "section"
+                ? sectionLabel(it.section.taxonomyKey)
+                : it.unmatched.label;
+            const sub =
+              it.kind === "section"
+                ? it.section.extractedValue || "no value set"
+                : it.unmatched.sourceText.slice(0, 60) + "…";
+            const isActive = active === it.id;
+            const notLocated = hasDoc && !placed.has(it.id);
+            const inlineControls = isActive && (!hasDoc || !placed.has(it.id));
+            return (
+              <div
+                key={it.id}
+                className={`rounded-md border ${
+                  isActive
+                    ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                    : "border-[var(--color-line)] bg-[var(--color-surface)]"
+                }`}
+              >
+                <button
+                  onClick={() => onFocus(it.id)}
+                  className="w-full px-2.5 py-2 text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${tone.dot}`} />
+                    <span className="text-sm font-medium">{label}</span>
+                    {notLocated && (
+                      <span className="ml-auto rounded bg-[var(--color-canvas)] px-1 text-[10px] text-[var(--color-muted)]">
+                        not located
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 truncate text-xs text-[var(--color-muted)]">
+                    {sub}
+                  </div>
+                </button>
+                {inlineControls && (
+                  <div className="border-t border-[var(--color-line)] p-2.5">
+                    {renderControls(it)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
-      <label className="mt-3 block text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
-        Value
-      </label>
-      <input
-        value={section.extractedValue}
-        onChange={(e) => onChange({ extractedValue: e.target.value })}
-        placeholder="e.g. 5 days (immediate family)"
-        className="mt-1 w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
-      />
-      {section.sourceText && (
-        <details className="mt-2">
-          <summary className="cursor-pointer text-sm text-[var(--color-accent)]">
-            Source language
-          </summary>
-          <p className="mt-1 whitespace-pre-wrap rounded-md bg-[var(--color-surface)] p-3 text-sm leading-relaxed">
-            {section.sourceText}
-          </p>
-        </details>
-      )}
-      <div className="mt-3">
-        <button
-          onClick={onConfirm}
-          disabled={!section.extractedValue.trim()}
-          className="rounded-md bg-[var(--color-ok)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
-        >
-          Confirm
-        </button>
-      </div>
     </div>
   );
-}
-
-function UnmatchedCard({
-  u,
-  onAssign,
-  onDismiss,
-}: {
-  u: UnmatchedSection;
-  onAssign: (key: string) => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
-      <div className="font-medium">{u.label}</div>
-      <p className="mt-1 whitespace-pre-wrap rounded-md bg-[var(--color-canvas)] p-3 text-sm leading-relaxed">
-        {u.sourceText}
-      </p>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <TaxonomySelect placeholder="Assign to section…" onChange={onAssign} />
-        <button
-          onClick={onDismiss}
-          className="text-sm text-[var(--color-muted)] hover:underline"
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ConfirmedRow({
-  section,
-  onReassign,
-  onUnconfirm,
-}: {
-  section: ParsedSection;
-  onReassign: (key: string) => void;
-  onUnconfirm: () => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-3 p-3">
-      <span className="min-w-40 text-sm font-medium">
-        {sectionLabel(section.taxonomyKey)}
-      </span>
-      <span className="flex-1 text-sm text-[var(--color-muted)]">
-        {section.extractedValue}
-      </span>
-      <TaxonomySelect
-        value={section.taxonomyKey}
-        onChange={onReassign}
-      />
-      <button
-        onClick={onUnconfirm}
-        className="text-sm text-[var(--color-muted)] hover:underline"
-      >
-        Re-open
-      </button>
-    </div>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="p-3 text-sm text-[var(--color-muted)]">{children}</p>;
 }
