@@ -11,7 +11,14 @@ export function getAnthropic(): Anthropic {
       "ANTHROPIC_API_KEY is not set. Copy .env.example to .env.local and add your key.",
     );
   }
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  if (!client)
+    client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      // Ride through brief overloads (529) / rate limits (429) / 5xx with the
+      // SDK's exponential backoff before the graceful-failure path ever shows.
+      // Capped at 3 so a sustained outage still fails reasonably fast.
+      maxRetries: 3,
+    });
   return client;
 }
 
