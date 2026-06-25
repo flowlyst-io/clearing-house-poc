@@ -30,6 +30,7 @@ export default function ComparePage() {
     new Set(DEFAULT_SECTIONS),
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
   const [drawer, setDrawer] = useState<{
     district: District;
     section: ParsedSection;
@@ -56,9 +57,26 @@ export default function ComparePage() {
   // Render rows in canonical taxonomy order, not click order — stable & scannable.
   const sections = TAXONOMY.filter((s) => sectionKeys.has(s.key));
 
+  // Search only narrows which OPTIONS show in the sidebar — it never changes the
+  // selection or what's in the matrix.
+  const q = search.trim().toLowerCase();
+  const visibleSections = q
+    ? TAXONOMY.filter((s) => s.label.toLowerCase().includes(q))
+    : TAXONOMY;
+  const visibleDistricts = q
+    ? pool.filter((d) => d.name.toLowerCase().includes(q))
+    : pool;
+
   function toggle(set: Set<string>, id: string): Set<string> {
     const next = new Set(set);
     next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  }
+  // "All" adds every currently-visible option to the selection (so it respects
+  // an active search); "Clear" empties the whole selection.
+  function selectAll(prev: Set<string>, ids: string[]): Set<string> {
+    const next = new Set(prev);
+    ids.forEach((id) => next.add(id));
     return next;
   }
 
@@ -136,92 +154,115 @@ export default function ComparePage() {
         )}
       </div>
 
-      {/* Section multi-select */}
-      <Picker
-        label="Sections"
-        count={`${sections.length}/${TAXONOMY.length}`}
-        onAll={() => setSectionKeys(new Set(TAXONOMY.map((s) => s.key)))}
-        onClear={() => setSectionKeys(new Set())}
-      >
-        {TAXONOMY.map((s) => (
-          <Chip
-            key={s.key}
-            active={sectionKeys.has(s.key)}
-            activeClass="border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
-            onClick={() => setSectionKeys((prev) => toggle(prev, s.key))}
-          >
-            {s.label}
-          </Chip>
-        ))}
-      </Picker>
+      <div className="flex flex-col gap-6 lg:flex-row">
+        {/* Left sidebar: search + multi-select filters */}
+        <aside className="space-y-5 lg:sticky lg:top-6 lg:max-h-[calc(100vh-5rem)] lg:w-64 lg:shrink-0 lg:self-start lg:overflow-y-auto">
+          <div className="relative">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search sections or districts…"
+              className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 pr-7 text-sm outline-none focus:border-[var(--color-accent)]"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+              >
+                ×
+              </button>
+            )}
+          </div>
 
-      {/* District multi-select */}
-      {pool.length > 0 && (
-        <Picker
-          label="Districts"
-          count={`${chosen.length}/${pool.length}`}
-          onAll={() => setSelected(new Set(pool.map((d) => d.id)))}
-          onClear={() => setSelected(new Set())}
-        >
-          {pool.map((d) => (
-            <Chip
-              key={d.id}
-              active={selected.has(d.id)}
-              activeClass="border-[var(--color-ink)] bg-[var(--color-ink)] text-white"
-              onClick={() => setSelected((prev) => toggle(prev, d.id))}
-            >
-              {d.name}
-            </Chip>
-          ))}
-        </Picker>
-      )}
+          <FilterList
+            label="Sections"
+            count={`${sections.length}/${TAXONOMY.length}`}
+            onAll={() =>
+              setSectionKeys((prev) =>
+                selectAll(prev, visibleSections.map((s) => s.key)),
+              )
+            }
+            onClear={() => setSectionKeys(new Set())}
+            items={visibleSections.map((s) => ({
+              id: s.key,
+              label: s.label,
+              active: sectionKeys.has(s.key),
+              onToggle: () => setSectionKeys((prev) => toggle(prev, s.key)),
+            }))}
+          />
 
-      {/* Matrix */}
-      {sections.length === 0 || chosen.length === 0 ? (
-        <p className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
-          {sections.length === 0
-            ? "Select at least one section above."
-            : "Select at least one district above."}
-        </p>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)]">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-[var(--color-line)]">
-                <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left font-medium">
-                  Section
-                </th>
-                {chosen.map((d) => (
-                  <th
-                    key={d.id}
-                    className="min-w-44 px-4 py-3 text-left align-bottom font-semibold"
-                  >
-                    {d.name}
-                    {d.term && (
-                      <div className="text-xs font-normal text-[var(--color-muted)]">
-                        {d.term}
-                      </div>
-                    )}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sections.map((sec) => (
-                <SectionRow
-                  key={sec.key}
-                  section={sec}
-                  districts={chosen}
-                  rowFor={rowFor}
-                  summary={summaries[`${sec.key}|${selectedIdsKey}`]}
-                  onOpen={(district, section) => setDrawer({ district, section })}
-                  onRetry={() => runSummary(sec, true)}
-                />
-              ))}
-            </tbody>
-          </table>
+          {pool.length > 0 && (
+            <FilterList
+              label="Districts"
+              count={`${chosen.length}/${pool.length}`}
+              onAll={() =>
+                setSelected((prev) =>
+                  selectAll(prev, visibleDistricts.map((d) => d.id)),
+                )
+              }
+              onClear={() => setSelected(new Set())}
+              items={visibleDistricts.map((d) => ({
+                id: d.id,
+                label: d.name,
+                active: selected.has(d.id),
+                onToggle: () => setSelected((prev) => toggle(prev, d.id)),
+              }))}
+            />
+          )}
+        </aside>
+
+        {/* Matrix */}
+        <div className="min-w-0 flex-1">
+          {sections.length === 0 || chosen.length === 0 ? (
+            <p className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
+              {sections.length === 0
+                ? "Select at least one section on the left."
+                : "Select at least one district on the left."}
+            </p>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)]">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--color-line)]">
+                    <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left font-medium">
+                      Section
+                    </th>
+                    {chosen.map((d) => (
+                      <th
+                        key={d.id}
+                        className="min-w-44 px-4 py-3 text-left align-bottom font-semibold"
+                      >
+                        {d.name}
+                        {d.term && (
+                          <div className="text-xs font-normal text-[var(--color-muted)]">
+                            {d.term}
+                          </div>
+                        )}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sections.map((sec) => (
+                    <SectionRow
+                      key={sec.key}
+                      section={sec}
+                      districts={chosen}
+                      rowFor={rowFor}
+                      summary={summaries[`${sec.key}|${selectedIdsKey}`]}
+                      onOpen={(district, section) =>
+                        setDrawer({ district, section })
+                      }
+                      onRetry={() => runSummary(sec, true)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       {drawer && (
         <SourceDrawer
@@ -343,25 +384,32 @@ function SectionRow({
   );
 }
 
-function Picker({
+interface FilterItem {
+  id: string;
+  label: string;
+  active: boolean;
+  onToggle: () => void;
+}
+
+function FilterList({
   label,
   count,
   onAll,
   onClear,
-  children,
+  items,
 }: {
   label: string;
   count: string;
   onAll: () => void;
   onClear: () => void;
-  children: React.ReactNode;
+  items: FilterItem[];
 }) {
   return (
     <div>
       <div className="flex items-center gap-3">
-        <label className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
+        <span className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
           {label} ({count})
-        </label>
+        </span>
         <button
           onClick={onAll}
           className="text-xs text-[var(--color-accent)] hover:underline"
@@ -375,32 +423,38 @@ function Picker({
           Clear
         </button>
       </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">{children}</div>
+      <div className="mt-1.5 space-y-0.5">
+        {items.length === 0 ? (
+          <p className="px-2 py-1 text-xs text-[var(--color-muted)]">
+            No matches.
+          </p>
+        ) : (
+          items.map((it) => <CheckRow key={it.id} item={it} />)
+        )}
+      </div>
     </div>
   );
 }
 
-function Chip({
-  active,
-  activeClass,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  activeClass: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
+function CheckRow({ item }: { item: FilterItem }) {
   return (
     <button
-      onClick={onClick}
-      className={`rounded-full border px-3 py-1 text-sm transition-colors ${
-        active
-          ? activeClass
-          : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
-      }`}
+      onClick={item.onToggle}
+      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-[var(--color-canvas)]"
     >
-      {children}
+      <span
+        className={`grid h-4 w-4 shrink-0 place-items-center rounded border text-[10px] text-white ${
+          item.active
+            ? "border-[var(--color-accent)] bg-[var(--color-accent)]"
+            : "border-[var(--color-line)] bg-[var(--color-surface)]"
+        }`}
+        aria-hidden
+      >
+        {item.active ? "✓" : ""}
+      </span>
+      <span className={item.active ? "" : "text-[var(--color-muted)]"}>
+        {item.label}
+      </span>
     </button>
   );
 }
