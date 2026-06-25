@@ -350,9 +350,9 @@ function DistrictReview({
                 <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
                   Page {pi + 1}
                 </div>
-                <div className="text-sm leading-relaxed">
+                <div className="whitespace-pre-wrap text-sm leading-relaxed">
                   {perPage[pi].segments.map((seg, si) => {
-                    if (!seg.itemId) return <span key={si}>{seg.text}</span>;
+                    if (!seg.itemId) return <PlainText key={si} text={seg.text} />;
                     const it = byId.get(seg.itemId);
                     if (!it) return <span key={si}>{seg.text}</span>;
                     const tone = toneOf(it);
@@ -435,6 +435,37 @@ function Legend({ dot, label }: { dot: string; label: string }) {
       <span className={`h-2.5 w-2.5 rounded-full ${dot}`} />
       {label}
     </span>
+  );
+}
+
+// A line is treated as a heading if it's an "ARTICLE …" line or a short ALL-CAPS
+// line (the section headers in these contracts). Used to bold headings in the
+// document reader. Line breaks themselves render via the container's pre-wrap.
+function isHeadingLine(line: string): boolean {
+  const t = line.trim();
+  if (t.length < 2 || t.length > 60) return false;
+  if (/^ARTICLE\b/i.test(t)) return true;
+  return /[A-Z]/.test(t) && !/[a-z]/.test(t);
+}
+
+function PlainText({ text }: { text: string }) {
+  // Keep the newlines as tokens so pre-wrap still produces the line breaks;
+  // wrap heading lines in bold.
+  const parts = text.split(/(\n)/);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part === "\n") return "\n";
+        if (part === "") return null;
+        if (isHeadingLine(part))
+          return (
+            <span key={i} className="font-semibold text-[var(--color-ink)]">
+              {part}
+            </span>
+          );
+        return part;
+      })}
+    </>
   );
 }
 
