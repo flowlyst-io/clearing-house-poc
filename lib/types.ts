@@ -40,6 +40,12 @@ export interface District {
   unmatched?: UnmatchedSection[];
   /** Until every flagged section is resolved, a district is "in review". */
   inPool: boolean;
+  /**
+   * Verbatim text extracted from the uploaded PDF — the audit trail / re-parse
+   * source. Absent on seed districts, and omitted from the districts list
+   * payload (it can be 100KB+); fetch a single district to load it.
+   */
+  rawText?: string;
   createdAt: number;
 }
 

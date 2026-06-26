@@ -2,66 +2,94 @@
 
 import { useEffect, useState } from "react";
 import type { District } from "./types";
-import { SEED_DISTRICTS } from "./seed";
 
-// localStorage is the contract pool for the POC (per the README — "local storage
-// is fine for now"). On first load we seed the three peer districts.
+// The contract pool now lives in Neon Postgres, reached through /api/districts.
+// This module keeps the same small API the pages already use (useDistricts +
+// add/update/remove) so callers barely change. Mutations are async and, on
+// success, dispatch EVT — every mounted useDistricts re-fetches in response,
+// which keeps separate views (Review, Compare) in sync within a tab.
 
-const KEY = "clearinghouse.districts.v1";
 const EVT = "clearinghouse:districts-changed";
 
-function read(): District[] {
-  if (typeof window === "undefined") return SEED_DISTRICTS;
+function notify() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(EVT));
+}
+
+async function fetchDistricts(): Promise<District[]> {
+  const res = await fetch("/api/districts");
+  if (!res.ok) throw new Error("Failed to load districts");
+  return (await res.json()) as District[];
+}
+
+async function readError(res: Response, fallback: string): Promise<string> {
   try {
-    const raw = window.localStorage.getItem(KEY);
-    if (!raw) {
-      window.localStorage.setItem(KEY, JSON.stringify(SEED_DISTRICTS));
-      return SEED_DISTRICTS;
-    }
-    return JSON.parse(raw) as District[];
+    const body = (await res.json()) as { error?: string };
+    return body.error || fallback;
   } catch {
-    return SEED_DISTRICTS;
+    return fallback;
   }
 }
 
-function write(districts: District[]) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify(districts));
-  window.dispatchEvent(new Event(EVT));
+export async function addDistrict(d: District): Promise<District> {
+  const res = await fetch("/api/districts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(d),
+  });
+  if (!res.ok) throw new Error(await readError(res, "Failed to save district"));
+  const created = (await res.json()) as District;
+  notify();
+  return created;
 }
 
-export function getDistricts(): District[] {
-  return read();
+export async function updateDistrict(
+  id: string,
+  patch: Partial<District>,
+): Promise<District> {
+  const res = await fetch(`/api/districts/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await readError(res, "Failed to update district"));
+  const updated = (await res.json()) as District;
+  notify();
+  return updated;
 }
 
-export function addDistrict(d: District) {
-  write([...read(), d]);
+export async function removeDistrict(id: string): Promise<void> {
+  const res = await fetch(`/api/districts/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await readError(res, "Failed to remove district"));
+  notify();
 }
 
-export function updateDistrict(id: string, patch: Partial<District>) {
-  write(read().map((d) => (d.id === id ? { ...d, ...patch } : d)));
+/** Fetch a single district WITH its raw extracted text (the list omits it). */
+export async function getDistrict(id: string): Promise<District> {
+  const res = await fetch(`/api/districts/${id}`);
+  if (!res.ok) throw new Error(await readError(res, "Failed to load district"));
+  return (await res.json()) as District;
 }
 
-export function removeDistrict(id: string) {
-  write(read().filter((d) => d.id !== id));
-}
-
-export function resetToSeed() {
-  write(SEED_DISTRICTS);
-}
-
-/** Reactive view of the pool. Re-renders on any change in this or another tab. */
+/** Reactive view of the pool. Re-fetches whenever a mutation fires EVT. */
 export function useDistricts(): District[] {
-  const [districts, setDistricts] = useState<District[]>(SEED_DISTRICTS);
+  const [districts, setDistricts] = useState<District[]>([]);
 
   useEffect(() => {
-    const sync = () => setDistricts(read());
+    let active = true;
+    const sync = () => {
+      fetchDistricts()
+        .then((d) => {
+          if (active) setDistricts(d);
+        })
+        .catch(() => {
+          /* leave the last good list in place on a transient failure */
+        });
+    };
     sync();
     window.addEventListener(EVT, sync);
-    window.addEventListener("storage", sync);
     return () => {
+      active = false;
       window.removeEventListener(EVT, sync);
-      window.removeEventListener("storage", sync);
     };
   }, []);
 

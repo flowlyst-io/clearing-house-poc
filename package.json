@@ -6,10 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "db:push": "drizzle-kit push",
+    "db:seed": "tsx lib/db/seed.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
+    "@neondatabase/serverless": "^0.10.4",
+    "drizzle-orm": "^0.38.3",
     "next": "^15.1.6",
     "pdfjs-dist": "^4.10.38",
     "react": "^19.0.0",
@@ -20,7 +24,10 @@
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "dotenv": "^16.4.7",
+    "drizzle-kit": "^0.30.1",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.0"
   }
 }

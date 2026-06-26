@@ -85,6 +85,8 @@ function DistrictReview({
   district: District;
   router: ReturnType<typeof useRouter>;
 }) {
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const flagged = district.sections
     .map((s, i) => ({ s, i }))
     .filter((x) => x.s.status === "flagged");
@@ -93,11 +95,23 @@ function DistrictReview({
     .filter((x) => x.s.status === "confirmed");
   const unmatched = district.unmatched ?? [];
 
+  // Every edit is a persisted PATCH; surface a failure instead of losing it silently.
+  async function save(patch: Partial<District>) {
+    try {
+      setSaveError(null);
+      await updateDistrict(district.id, patch);
+      return true;
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Couldn't save your change.");
+      return false;
+    }
+  }
+
   function patchSection(index: number, patch: Partial<ParsedSection>) {
     const sections = district.sections.map((s, i) =>
       i === index ? { ...s, ...patch } : s,
     );
-    updateDistrict(district.id, { sections });
+    void save({ sections });
   }
 
   function assignUnmatched(u: UnmatchedSection, taxonomyKey: string) {
@@ -109,27 +123,30 @@ function DistrictReview({
       status: "flagged",
       note: "Assigned from uncategorized — set the value, then confirm.",
     };
-    updateDistrict(district.id, {
+    void save({
       sections: [...district.sections, newSection],
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
     });
   }
 
   function dismissUnmatched(u: UnmatchedSection) {
-    updateDistrict(district.id, {
+    void save({
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
     });
   }
 
-  function addToPool() {
-    updateDistrict(district.id, { inPool: true });
-    router.push("/compare");
+  async function addToPool() {
+    if (await save({ inPool: true })) router.push("/compare");
   }
 
-  function discard() {
+  async function discard() {
     if (confirm(`Remove ${district.name} from the workspace?`)) {
-      removeDistrict(district.id);
-      router.push("/review");
+      try {
+        await removeDistrict(district.id);
+        router.push("/review");
+      } catch (e) {
+        setSaveError(e instanceof Error ? e.message : "Couldn't remove the district.");
+      }
     }
   }
 
@@ -162,6 +179,12 @@ function DistrictReview({
           </button>
         </div>
       </div>
+
+      {saveError && (
+        <div className="rounded-md bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
+          {saveError}
+        </div>
+      )}
 
       {/* Needs review */}
       <section>

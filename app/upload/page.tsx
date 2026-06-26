@@ -81,10 +81,23 @@ export default function UploadPage() {
         source: "parsed",
         sections: data.sections,
         unmatched: data.unmatched,
+        rawText: text, // keep the full extracted text for audit / re-parse
         inPool: false, // enters the pool only after a human confirms in Review
         createdAt: Date.now(),
       };
-      addDistrict(district);
+      // Persist before navigating — Review fetches this district by id on load.
+      try {
+        await addDistrict(district);
+      } catch (e) {
+        setError({
+          message:
+            (e instanceof Error ? e.message : "Couldn't save the district") +
+            " — your parse succeeded; try saving again.",
+          retryable: true,
+        });
+        setPhase("error");
+        return;
+      }
       router.push(`/review?d=${district.id}`);
     } catch {
       // fetch threw before any response — almost always transient/network.
