@@ -1,12 +1,21 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { UploadCloud, Loader2, Check, Sparkles } from "lucide-react";
 import { extractPdfText } from "@/lib/pdf";
 import { addDistrict } from "@/lib/store";
+import { SAMPLE_DISTRICT_NAME, SAMPLE_PAGES, SAMPLE_TEXT } from "@/lib/sample";
 import type { District, ParseResult } from "@/lib/types";
 
 type Phase = "idle" | "extracting" | "ready" | "parsing" | "error";
+
+const PARSE_STEPS = [
+  "Reading the contract text…",
+  "Splitting into standardized sections…",
+  "Extracting comparable values…",
+  "Flagging low-confidence sections…",
+];
 
 export default function UploadPage() {
   const router = useRouter();
@@ -15,14 +24,24 @@ export default function UploadPage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [districtName, setDistrictName] = useState("");
   const [text, setText] = useState("");
-  // Per-page text from the PDF (null when the user pasted text instead).
+  // Per-page text from the PDF/sample (null when the user pasted text instead).
   const [pages, setPages] = useState<string[] | null>(null);
-  const [meta, setMeta] = useState<{ pages?: number; chars: number }>({
-    chars: 0,
-  });
+  const [meta, setMeta] = useState<{ pages?: number; chars: number }>({ chars: 0 });
+  const [step, setStep] = useState(0);
   const [error, setError] = useState<{ message: string; retryable: boolean } | null>(
     null,
   );
+
+  // Advance the presentational parse steps while the real request is in flight.
+  useEffect(() => {
+    if (phase !== "parsing") return;
+    setStep(0);
+    const t = setInterval(
+      () => setStep((s) => Math.min(s + 1, PARSE_STEPS.length - 1)),
+      700,
+    );
+    return () => clearInterval(t);
+  }, [phase]);
 
   async function handleFile(file: File) {
     setError(null);
@@ -34,7 +53,6 @@ export default function UploadPage() {
       return;
     }
     if (!districtName) {
-      // Pre-fill a reasonable name from the filename.
       setDistrictName(file.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " "));
     }
     setPhase("extracting");
@@ -56,6 +74,19 @@ export default function UploadPage() {
     }
   }
 
+  function loadSample() {
+    setError(null);
+    setPhase("extracting");
+    // A brief beat so the action reads as "extracting", then ready.
+    setTimeout(() => {
+      setDistrictName(SAMPLE_DISTRICT_NAME);
+      setPages(SAMPLE_PAGES);
+      setText(SAMPLE_TEXT);
+      setMeta({ pages: SAMPLE_PAGES.length, chars: SAMPLE_TEXT.length });
+      setPhase("ready");
+    }, 650);
+  }
+
   async function parse() {
     setError(null);
     setPhase("parsing");
@@ -70,10 +101,7 @@ export default function UploadPage() {
         retryable?: boolean;
       };
       if (!res.ok) {
-        setError({
-          message: data.error || "Parse failed",
-          retryable: !!data.retryable,
-        });
+        setError({ message: data.error || "Parse failed", retryable: !!data.retryable });
         setPhase("error");
         return;
       }
@@ -85,21 +113,17 @@ export default function UploadPage() {
         source: "parsed",
         sections: data.sections,
         unmatched: data.unmatched,
-        // Persist the document text for the Review reader. PDF → per-page;
-        // pasted text → a single page.
+        // Document text for the Review reader. PDF/sample → per-page; pasted → one page.
         pages: pages && pages.length ? pages : [text],
-        inPool: false, // enters the pool only after a human confirms in Review
+        inPool: false,
         createdAt: Date.now(),
       };
-      // Persist to Neon before navigating — Review fetches this district by id.
       try {
         await addDistrict(district);
       } catch (storeErr) {
         setError({
           message:
-            (storeErr instanceof Error
-              ? storeErr.message
-              : "Couldn't save the contract") +
+            (storeErr instanceof Error ? storeErr.message : "Couldn't save the contract") +
             " — your parse succeeded; try saving again.",
           retryable: true,
         });
@@ -108,7 +132,6 @@ export default function UploadPage() {
       }
       router.push(`/review?d=${district.id}`);
     } catch {
-      // fetch threw before any response — almost always transient/network.
       setError({
         message: "Couldn't reach the parser. Check your connection and try again.",
         retryable: true,
@@ -117,29 +140,33 @@ export default function UploadPage() {
     }
   }
 
-  const canParse = text.trim().length >= 200 && phase !== "parsing";
+  const canParse = text.trim().length >= 120 && phase !== "parsing";
 
   return (
-    <div className="max-w-2xl space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Add a contract</h1>
-        <p className="text-sm text-[var(--color-muted)]">
-          Drop a PDF — the text is pulled out in your browser, so the file stays
-          on your machine. Only the text goes to the parser. No PDF? Paste the
-          text instead.
-        </p>
-      </div>
+    <div className="max-w-[680px]">
+      <h1 className="font-display text-[28px] font-semibold tracking-[-0.3px] text-[var(--color-ink-deep)]">
+        Add a contract
+      </h1>
+      <p className="mt-2 text-[15px] leading-relaxed text-[#51607a]">
+        Drop a PDF — the text is pulled out in your browser, so the file stays on
+        your machine. Only the text goes to the parser. No PDF? Paste the text, or
+        load a sample.
+      </p>
 
       {/* Dropzone */}
       <div
-        onClick={() => fileInput.current?.click()}
+        onClick={() => phase !== "parsing" && fileInput.current?.click()}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
           const f = e.dataTransfer.files?.[0];
           if (f) handleFile(f);
         }}
-        className="cursor-pointer rounded-xl border-2 border-dashed border-[var(--color-line)] bg-[var(--color-surface)] p-8 text-center transition-colors hover:border-[var(--color-accent)]"
+        className={`mt-6 cursor-pointer rounded-[14px] border-2 border-dashed p-8 text-center transition-colors ${
+          phase === "extracting"
+            ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+            : "border-[#d2dae6] bg-[var(--color-surface)] hover:border-[var(--color-accent)]"
+        }`}
       >
         <input
           ref={fileInput}
@@ -151,31 +178,53 @@ export default function UploadPage() {
             if (f) handleFile(f);
           }}
         />
-        <p className="font-medium">
+        <span className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
+          {phase === "extracting" ? (
+            <Loader2 size={22} className="animate-spin" />
+          ) : (
+            <UploadCloud size={22} strokeWidth={1.9} />
+          )}
+        </span>
+        <p className="mt-3 text-[15px] font-medium text-[var(--color-ink)]">
           {phase === "extracting"
-            ? "Reading the PDF…"
+            ? "Extracting text…"
             : "Drop a contract PDF here, or click to choose"}
         </p>
-        {meta.chars > 0 && phase !== "extracting" && (
-          <p className="mt-1 text-sm text-[var(--color-muted)]">
-            Extracted {meta.pages ? `${meta.pages} pages, ` : ""}
-            {meta.chars.toLocaleString()} characters
+        {meta.chars > 0 && phase !== "extracting" ? (
+          <p className="mt-1 text-[13px] text-[var(--color-muted)]">
+            Extracted {meta.chars.toLocaleString()} characters
+            {meta.pages ? ` · ${meta.pages} pages` : ""}
           </p>
+        ) : (
+          phase !== "extracting" && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                loadSample();
+              }}
+              className="mt-1 text-[13px] font-medium text-[var(--color-accent)] hover:underline"
+            >
+              or load a sample contract
+            </button>
+          )
         )}
       </div>
 
-      <div>
-        <label className="text-sm font-medium">District name</label>
+      <div className="mt-6">
+        <label className="text-[13px] font-semibold text-[var(--color-ink)]">
+          District name
+        </label>
         <input
           value={districtName}
           onChange={(e) => setDistrictName(e.target.value)}
           placeholder="e.g. Cohoes City School District"
-          className="mt-1 w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+          className="mt-1.5 w-full rounded-lg border border-[#dde3ec] bg-[var(--color-surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--color-accent)]"
         />
       </div>
 
-      <div>
-        <label className="text-sm font-medium">
+      <div className="mt-5">
+        <label className="text-[13px] font-semibold text-[var(--color-ink)]">
           Contract text{" "}
           <span className="font-normal text-[var(--color-muted)]">
             (extracted from the PDF, or paste it here)
@@ -191,12 +240,12 @@ export default function UploadPage() {
           }}
           rows={8}
           placeholder="Paste the collective bargaining agreement text here…"
-          className="mt-1 w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-[var(--color-accent)]"
+          className="font-display mt-1.5 w-full rounded-lg border border-[#dde3ec] bg-[var(--color-surface)] px-3 py-2.5 text-[13.5px] leading-relaxed outline-none focus:border-[var(--color-accent)]"
         />
       </div>
 
       {error && (
-        <div className="flex items-center justify-between gap-3 rounded-md bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
           <span>{error.message}</span>
           {error.retryable && (
             <button
@@ -210,21 +259,56 @@ export default function UploadPage() {
         </div>
       )}
 
-      <div className="flex items-center gap-3">
-        <button
-          onClick={parse}
-          disabled={!canParse}
-          className="rounded-md bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-        >
-          {phase === "parsing" ? "Parsing…" : "Parse contract"}
-        </button>
-        {phase === "parsing" && (
-          <span className="text-sm text-[var(--color-muted)]">
-            AI is reading the whole contract and pulling out each section — this
-            can take up to a minute.
-          </span>
-        )}
-      </div>
+      {/* Parse progress */}
+      {phase === "parsing" ? (
+        <div className="mt-6 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5 shadow-[0_1px_2px_rgba(16,27,48,.04)]">
+          <div className="space-y-3">
+            {PARSE_STEPS.map((label, i) => {
+              const state = i < step ? "done" : i === step ? "active" : "pending";
+              return (
+                <div key={i} className="flex items-center gap-3 text-sm">
+                  <span
+                    className={`grid h-5 w-5 place-items-center rounded-full ${
+                      state === "done"
+                        ? "bg-[var(--color-ok)] text-white"
+                        : state === "active"
+                          ? "text-[var(--color-accent)]"
+                          : "text-[var(--color-line)]"
+                    }`}
+                  >
+                    {state === "done" ? (
+                      <Check size={13} strokeWidth={3} />
+                    ) : state === "active" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <span className="h-2 w-2 rounded-full bg-current" />
+                    )}
+                  </span>
+                  <span
+                    className={
+                      state === "pending"
+                        ? "text-[var(--color-muted)]"
+                        : "text-[var(--color-ink)]"
+                    }
+                  >
+                    {label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-6">
+          <button
+            onClick={parse}
+            disabled={!canParse}
+            className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_2px_10px_rgba(36,86,201,.28)] disabled:opacity-40"
+          >
+            <Sparkles size={16} strokeWidth={2} /> Parse contract
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -269,11 +269,21 @@ function DistrictReview({
   function focus(id: string) {
     setActive(id);
     if (hasDoc && placed.has(id)) {
-      requestAnimationFrame(() =>
-        document
-          .getElementById(`hl-${id}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "center" }),
-      );
+      // Scroll the real scroll container (#main-scroll), not the window — compute
+      // the mark's offset relative to the container and center it.
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`hl-${id}`);
+        const container = document.getElementById("main-scroll");
+        if (!el || !container) return;
+        const elRect = el.getBoundingClientRect();
+        const cRect = container.getBoundingClientRect();
+        const delta =
+          elRect.top - cRect.top - cRect.height / 2 + elRect.height / 2;
+        container.scrollTo({
+          top: container.scrollTop + delta,
+          behavior: "smooth",
+        });
+      });
     }
   }
 
@@ -365,8 +375,17 @@ function DistrictReview({
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">{district.name}</h1>
-          <p className="text-sm text-[var(--color-muted)]">
+          <div className="flex items-center gap-2.5">
+            <h1 className="font-display text-[26px] font-semibold tracking-[-0.3px] text-[var(--color-ink-deep)]">
+              {district.name}
+            </h1>
+            {district.source === "parsed" && (
+              <span className="rounded-full bg-[var(--color-accent-soft)] px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-accent)]">
+                Parsed live
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-[13.5px] text-[var(--color-muted)]">
             {district.term ? `${district.term} · ` : ""}
             {confirmed.length}/{totalSections} sections confirmed ·{" "}
             {flagged.length} need review · {uncategorized.length} uncategorized
@@ -375,15 +394,15 @@ function DistrictReview({
         <div className="flex gap-2">
           <button
             onClick={discard}
-            className="rounded-md border border-[var(--color-line)] px-3 py-2 text-sm text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+            className="rounded-lg border border-[#d8dee8] px-3.5 py-2 text-sm text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
           >
             Discard
           </button>
           <button
             onClick={addToPool}
-            className="rounded-md bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white"
+            className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white shadow-[0_2px_10px_rgba(36,86,201,.28)] hover:opacity-95"
           >
-            {district.inPool ? "Done" : "Add to comparison pool"}
+            {district.inPool ? "Done — back to Compare" : "Add to comparison pool"}
             {flagged.length > 0 && !district.inPool ? ` (${flagged.length} flagged)` : ""}
           </button>
         </div>
@@ -412,10 +431,10 @@ function DistrictReview({
                 key={pi}
                 className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5"
               >
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-muted)]">
                   Page {pi + 1}
                 </div>
-                <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                <div className="font-display whitespace-pre-wrap text-[15px] leading-[1.78] text-[#334155]">
                   {perPage[pi].segments.map((seg, si) => {
                     if (!seg.itemId) return <PlainText key={si} text={seg.text} />;
                     const it = byId.get(seg.itemId);
@@ -427,7 +446,7 @@ function DistrictReview({
                         <mark
                           id={`hl-${it.id}`}
                           onClick={() => setActive(isActive ? null : it.id)}
-                          className={`cursor-pointer rounded px-0.5 ${tone.mark} ${
+                          className={`cursor-pointer rounded-[4px] px-[3px] py-[1px] ${tone.mark} ${
                             isActive ? `ring-2 ${tone.ring}` : ""
                           }`}
                           title="Review this"
@@ -435,7 +454,7 @@ function DistrictReview({
                           {seg.text}
                         </mark>
                         {isActive && (
-                          <span className="absolute left-0 top-full z-30 mt-1 block w-72 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] p-3 text-[var(--color-ink)] shadow-xl">
+                          <span className="absolute left-0 top-full z-30 mt-1 block w-[290px] rounded-[11px] border border-[var(--color-line)] bg-[var(--color-surface)] p-3 text-[var(--color-ink)] shadow-[0_14px_38px_rgba(16,27,48,.2)]">
                             {renderControls(it)}
                           </span>
                         )}

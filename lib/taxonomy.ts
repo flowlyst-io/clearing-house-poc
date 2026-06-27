@@ -12,6 +12,16 @@
 
 export type ValueKind = "number" | "money" | "percent" | "text";
 
+export type TaxonomyGroup = "Scope" | "Compensation" | "Leave" | "Process";
+
+/** Display order for the grouped Sections checklist in Compare. */
+export const TAXONOMY_GROUPS: TaxonomyGroup[] = [
+  "Scope",
+  "Compensation",
+  "Leave",
+  "Process",
+];
+
 export interface TaxonomySection {
   key: string;
   label: string;
@@ -23,11 +33,14 @@ export interface TaxonomySection {
   valueKind: ValueKind;
   /** Unit suffix for display, e.g. "days", "%". */
   unit?: string;
+  /** Category for Compare's grouped filter rail. */
+  group: TaxonomyGroup;
 }
 
 export const TAXONOMY: TaxonomySection[] = [
   {
     key: "recognition",
+    group: "Scope",
     label: "Recognition",
     description:
       "Which employees the union represents — the definition of the bargaining unit.",
@@ -37,6 +50,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "work_year",
+    group: "Scope",
     label: "Work Year & Workday",
     description:
       "Length of the school/work year for teachers and the length of the workday.",
@@ -47,6 +61,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "class_size",
+    group: "Scope",
     label: "Class Size",
     description: "Maximum or target class sizes, including any ESL/special caps.",
     valueHint:
@@ -56,6 +71,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "salary_schedule",
+    group: "Compensation",
     label: "Salary Schedule",
     description:
       "Base salary schedule — starting (Step 1, BA) and maximum (top step) base pay.",
@@ -66,6 +82,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "salary_differential",
+    group: "Compensation",
     label: "Salary Differentials & Extra Duty",
     description:
       "Stipends and extra-duty pay (coaching, coordinators, in-service, summer school).",
@@ -76,6 +93,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "health_insurance",
+    group: "Compensation",
     label: "Health Insurance",
     description:
       "Health insurance coverage and the district's contribution toward premiums.",
@@ -86,6 +104,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "sick_leave",
+    group: "Leave",
     label: "Sick Leave",
     description: "Annual sick leave allowance and accumulation cap.",
     valueHint:
@@ -95,6 +114,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "bereavement",
+    group: "Leave",
     label: "Bereavement Leave",
     description: "Paid leave on the death of a family member.",
     valueHint:
@@ -104,6 +124,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "personal_leave",
+    group: "Leave",
     label: "Personal Leave",
     description: "Paid personal-business days.",
     valueHint: "Personal days granted per year (e.g. 3).",
@@ -112,6 +133,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "extended_leave",
+    group: "Leave",
     label: "Extended & Child-Care Leave",
     description:
       "Sabbaticals, child-care leave, and other extended leaves of absence.",
@@ -121,6 +143,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "evaluation",
+    group: "Process",
     label: "Teacher Evaluation",
     description: "How teachers are evaluated and observation requirements.",
     valueHint:
@@ -129,6 +152,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "rif",
+    group: "Process",
     label: "Reduction in Force",
     description: "Layoff procedure and order (seniority, recall rights).",
     valueHint: "One-line summary of the layoff/recall basis (e.g. 'by seniority within tenure area').",
@@ -136,6 +160,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "retirement",
+    group: "Compensation",
     label: "Retirement Incentive",
     description: "Retirement incentive or severance payout.",
     valueHint:
@@ -145,6 +170,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "grievance",
+    group: "Process",
     label: "Grievance Procedure",
     description: "Steps for resolving disputes, up to and including arbitration.",
     valueHint:
@@ -153,6 +179,7 @@ export const TAXONOMY: TaxonomySection[] = [
   },
   {
     key: "duration",
+    group: "Process",
     label: "Term of Agreement",
     description: "The dates the contract covers.",
     valueHint: "The term as a range (e.g. '2023–2027').",

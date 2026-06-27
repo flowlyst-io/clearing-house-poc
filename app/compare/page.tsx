@@ -2,10 +2,16 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Search, Star, X, ArrowRight } from "lucide-react";
 import { useDistricts } from "@/lib/store";
-import { TAXONOMY, TAXONOMY_BY_KEY } from "@/lib/taxonomy";
+import {
+  TAXONOMY,
+  TAXONOMY_BY_KEY,
+  TAXONOMY_GROUPS,
+} from "@/lib/taxonomy";
 import type { TaxonomySection } from "@/lib/taxonomy";
 import type { District, ParsedSection } from "@/lib/types";
+import { districtColor } from "@/lib/colors";
 import {
   parseNumeric,
   formatValue,
@@ -13,7 +19,7 @@ import {
   highlightNumbers,
 } from "@/lib/values";
 
-const DEFAULT_SECTIONS = ["bereavement", "sick_leave", "salary_schedule"];
+const DEFAULT_SECTIONS = ["salary_schedule", "health_insurance", "sick_leave"];
 
 interface SummaryState {
   loading: boolean;
@@ -25,22 +31,24 @@ export default function ComparePage() {
   const districts = useDistricts();
   const pool = useMemo(() => districts.filter((d) => d.inPool), [districts]);
 
-  // Both sections and districts are now multi-select.
+  // District viz color is assigned in pool order — same color everywhere.
+  const colorById = useMemo(() => {
+    const m = new Map<string, string>();
+    pool.forEach((d, i) => m.set(d.id, districtColor(i)));
+    return m;
+  }, [pool]);
+
   const [sectionKeys, setSectionKeys] = useState<Set<string>>(
     new Set(DEFAULT_SECTIONS),
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const [showAllSections, setShowAllSections] = useState(false);
-  const [showAllDistricts, setShowAllDistricts] = useState(false);
   const [drawer, setDrawer] = useState<{
     district: District;
     section: ParsedSection;
   } | null>(null);
 
-  // Keep district selection sensible as the pool changes (auto-select arrivals,
-  // preserve deliberate deselections — StrictMode-safe: ref written in the effect
-  // body, not inside the setState updater).
+  // Auto-select arriving districts, preserve deliberate deselections.
   const seenIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     const ids = pool.map((d) => d.id);
@@ -56,11 +64,9 @@ export default function ComparePage() {
   }, [pool]);
 
   const chosen = pool.filter((d) => selected.has(d.id));
-  // Render rows in canonical taxonomy order, not click order — stable & scannable.
   const sections = TAXONOMY.filter((s) => sectionKeys.has(s.key));
 
-  // Search only narrows which OPTIONS show in the sidebar — it never changes the
-  // selection or what's in the matrix.
+  // Search narrows only which OPTIONS show — never the selection or the matrix.
   const q = search.trim().toLowerCase();
   const visibleSections = q
     ? TAXONOMY.filter((s) => s.label.toLowerCase().includes(q))
@@ -74,8 +80,6 @@ export default function ComparePage() {
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   }
-  // "All" adds every currently-visible option to the selection (so it respects
-  // an active search); "Clear" empties the whole selection.
   function selectAll(prev: Set<string>, ids: string[]): Set<string> {
     const next = new Set(prev);
     ids.forEach((id) => next.add(id));
@@ -83,23 +87,21 @@ export default function ComparePage() {
   }
 
   const selectedIdsKey = [...selected].sort().join(",");
+  const sectionKeysKey = [...sectionKeys].sort().join(",");
 
   function rowFor(d: District, key: string): ParsedSection | null {
     return d.sections.find((s) => s.taxonomyKey === key) ?? null;
   }
 
-  // ---- One overall AI summary across everything selected ----
+  // ---- One overall AI synthesis across everything selected ----
   const [overall, setOverall] = useState<SummaryState>({
     loading: false,
     text: "",
     error: null,
   });
   const fetchedKey = useRef<string | null>(null);
-  const sectionKeysKey = [...sectionKeys].sort().join(",");
 
   function fetchOverall(force = false) {
-    // Build the grid: each selected section (taxonomy order) with the value from
-    // each chosen district. Skip sections no chosen district has.
     const payloadSections = sections
       .map((sec) => ({
         label: sec.label,
@@ -130,7 +132,7 @@ export default function ComparePage() {
         setOverall({ loading: false, text: data.synthesis, error: null });
       })
       .catch((e) => {
-        fetchedKey.current = null; // allow retry
+        fetchedKey.current = null;
         setOverall({
           loading: false,
           text: "",
@@ -145,35 +147,46 @@ export default function ComparePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionKeysKey, selectedIdsKey, districts]);
 
+  const sectionsByGroup = TAXONOMY_GROUPS.map((g) => ({
+    group: g,
+    items: visibleSections.filter((s) => s.group === g),
+  })).filter((x) => x.items.length > 0);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Compare districts</h1>
-          <p className="text-sm text-[var(--color-muted)]">
-            Pick one or more sections and districts. Click any value to read the
-            source language.
+          <h1 className="font-display text-[26px] font-semibold tracking-[-0.3px] text-[var(--color-ink-deep)]">
+            Compare districts
+          </h1>
+          <p className="mt-1 max-w-[620px] text-[13.5px] leading-relaxed text-[var(--color-muted)]">
+            Pick sections and districts. Dots on each range show where every
+            district falls; click any value for the source language.
           </p>
         </div>
         {pool.length === 0 && (
           <Link
             href="/upload"
-            className="rounded-md bg-[var(--color-accent)] px-3 py-2 text-sm font-medium text-white"
+            className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white shadow-[0_2px_10px_rgba(36,86,201,.28)]"
           >
-            Add a contract to compare →
+            Add a contract <ArrowRight size={16} strokeWidth={2.2} />
           </Link>
         )}
       </div>
 
       <div className="flex flex-col gap-6 lg:flex-row">
-        {/* Left sidebar: search + multi-select filters */}
-        <aside className="space-y-5 lg:sticky lg:top-6 lg:max-h-[calc(100vh-5rem)] lg:w-64 lg:shrink-0 lg:self-start lg:overflow-y-auto">
+        {/* Filter rail */}
+        <aside className="space-y-5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-3rem)] lg:w-[248px] lg:shrink-0 lg:self-start lg:overflow-y-auto">
           <div className="relative">
+            <Search
+              size={15}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-muted)]"
+            />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search sections or districts…"
-              className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 pr-7 text-sm outline-none focus:border-[var(--color-accent)]"
+              className="w-full rounded-lg border border-[#dde3ec] bg-[var(--color-surface)] py-2 pl-9 pr-7 text-sm outline-none focus:border-[var(--color-accent)]"
             />
             {search && (
               <button
@@ -181,75 +194,112 @@ export default function ComparePage() {
                 aria-label="Clear search"
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-muted)] hover:text-[var(--color-ink)]"
               >
-                ×
+                <X size={14} />
               </button>
             )}
           </div>
 
-          <FilterList
-            label="Sections"
-            count={`${sections.length}/${TAXONOMY.length}`}
-            onAll={() =>
-              setSectionKeys((prev) =>
-                selectAll(prev, visibleSections.map((s) => s.key)),
-              )
-            }
-            onClear={() => setSectionKeys(new Set())}
-            expanded={showAllSections}
-            onToggleExpand={() => setShowAllSections((v) => !v)}
-            items={visibleSections.map((s) => ({
-              id: s.key,
-              label: s.label,
-              active: sectionKeys.has(s.key),
-              onToggle: () => setSectionKeys((prev) => toggle(prev, s.key)),
-            }))}
-          />
-
-          {pool.length > 0 && (
-            <FilterList
-              label="Districts"
-              count={`${chosen.length}/${pool.length}`}
+          {/* Sections — grouped */}
+          <div>
+            <RailHeader
+              label="Sections"
+              count={`${sections.length}/${TAXONOMY.length}`}
               onAll={() =>
-                setSelected((prev) =>
-                  selectAll(prev, visibleDistricts.map((d) => d.id)),
+                setSectionKeys((prev) =>
+                  selectAll(prev, visibleSections.map((s) => s.key)),
                 )
               }
-              onClear={() => setSelected(new Set())}
-              expanded={showAllDistricts}
-              onToggleExpand={() => setShowAllDistricts((v) => !v)}
-              items={visibleDistricts.map((d) => ({
-                id: d.id,
-                label: d.name,
-                active: selected.has(d.id),
-                onToggle: () => setSelected((prev) => toggle(prev, d.id)),
-              }))}
+              onClear={() => setSectionKeys(new Set())}
             />
+            {sectionsByGroup.length === 0 ? (
+              <p className="px-2 py-1 text-xs text-[var(--color-muted)]">No matches.</p>
+            ) : (
+              <div className="mt-2 space-y-3">
+                {sectionsByGroup.map(({ group, items }) => (
+                  <div key={group}>
+                    <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#94a3b8]">
+                      {group}
+                    </div>
+                    <div className="space-y-0.5">
+                      {items.map((s) => (
+                        <CheckRow
+                          key={s.key}
+                          label={s.label}
+                          active={sectionKeys.has(s.key)}
+                          onToggle={() =>
+                            setSectionKeys((prev) => toggle(prev, s.key))
+                          }
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Districts — with viz color dots */}
+          {pool.length > 0 && (
+            <div>
+              <RailHeader
+                label="Districts"
+                count={`${chosen.length}/${pool.length}`}
+                onAll={() =>
+                  setSelected((prev) =>
+                    selectAll(prev, visibleDistricts.map((d) => d.id)),
+                  )
+                }
+                onClear={() => setSelected(new Set())}
+              />
+              <div className="mt-2 space-y-0.5">
+                {visibleDistricts.length === 0 ? (
+                  <p className="px-2 py-1 text-xs text-[var(--color-muted)]">
+                    No matches.
+                  </p>
+                ) : (
+                  visibleDistricts.map((d) => (
+                    <CheckRow
+                      key={d.id}
+                      label={d.name}
+                      active={selected.has(d.id)}
+                      dot={colorById.get(d.id)}
+                      onToggle={() => setSelected((prev) => toggle(prev, d.id))}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
           )}
         </aside>
 
         {/* Matrix */}
         <div className="min-w-0 flex-1 space-y-4">
-          {/* One overall AI summary across everything selected */}
           {sections.length > 0 && chosen.length > 0 && (
-            <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-accent-soft)] p-4 text-sm">
+            <div
+              className="rounded-[14px] border border-[#dbe6fb] p-4"
+              style={{ background: "linear-gradient(180deg,#f5f8ff,#fbfcff)" }}
+            >
               <div className="flex items-center justify-between gap-3">
-                <span className="font-medium text-[var(--color-accent)]">
-                  AI summary
+                <span className="flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-[0.1em] text-[var(--color-accent)]">
+                  <Star size={13} className="fill-[var(--color-accent)]" /> AI synthesis
                 </span>
-                {overall.error && (
-                  <button
-                    onClick={() => fetchOverall(true)}
-                    className="shrink-0 text-xs font-medium text-[var(--color-accent)] underline"
-                  >
-                    Retry
-                  </button>
-                )}
+                <span className="text-[12px] text-[var(--color-muted)]">
+                  {chosen.length} district{chosen.length === 1 ? "" : "s"} ·{" "}
+                  {sections.length} section{sections.length === 1 ? "" : "s"}
+                  {overall.error && (
+                    <button
+                      onClick={() => fetchOverall(true)}
+                      className="ml-2 font-medium text-[var(--color-accent)] underline"
+                    >
+                      Retry
+                    </button>
+                  )}
+                </span>
               </div>
-              <p className="mt-1 leading-relaxed">
+              <p className="font-display mt-2 text-[15px] leading-[1.6] text-[#1f2b40]">
                 {overall.loading ? (
                   <span className="text-[var(--color-muted)]">
-                    reading the values across {sections.length} section
-                    {sections.length === 1 ? "" : "s"}…
+                    Reading the values across the selection…
                   </span>
                 ) : overall.error ? (
                   <span className="text-[var(--color-flag)]">{overall.error}</span>
@@ -265,27 +315,35 @@ export default function ComparePage() {
           )}
 
           {sections.length === 0 || chosen.length === 0 ? (
-            <p className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
+            <p className="rounded-[14px] border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
               {sections.length === 0
                 ? "Select at least one section on the left."
                 : "Select at least one district on the left."}
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)]">
+            <div className="overflow-x-auto rounded-[14px] border border-[var(--color-line)] bg-[var(--color-surface)]">
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="border-b border-[var(--color-line)]">
-                    <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left font-medium">
+                    <th className="sticky left-0 top-0 z-20 bg-[var(--color-surface)] px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--color-muted)]">
                       Section
                     </th>
                     {chosen.map((d) => (
                       <th
                         key={d.id}
-                        className="min-w-44 px-4 py-3 text-left align-bottom font-semibold"
+                        className="sticky top-0 z-10 min-w-44 bg-[var(--color-surface)] px-4 py-3 text-left align-bottom"
                       >
-                        {d.name}
+                        <span className="flex items-center gap-1.5">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full"
+                            style={{ background: colorById.get(d.id) }}
+                          />
+                          <span className="font-semibold text-[var(--color-ink)]">
+                            {d.name}
+                          </span>
+                        </span>
                         {d.term && (
-                          <div className="text-xs font-normal text-[var(--color-muted)]">
+                          <div className="mt-0.5 pl-4 text-xs font-normal text-[var(--color-muted)]">
                             {d.term}
                           </div>
                         )}
@@ -300,6 +358,7 @@ export default function ComparePage() {
                       section={sec}
                       districts={chosen}
                       rowFor={rowFor}
+                      colorById={colorById}
                       onOpen={(district, section) =>
                         setDrawer({ district, section })
                       }
@@ -324,187 +383,178 @@ export default function ComparePage() {
   );
 }
 
+function RangeBar({
+  section,
+  cells,
+  colorById,
+}: {
+  section: TaxonomySection;
+  cells: { d: District; sec: ParsedSection | null }[];
+  colorById: Map<string, string>;
+}) {
+  const points = cells
+    .filter((c) => c.sec)
+    .map((c) => ({
+      id: c.d.id,
+      n: parseNumeric(section.valueKind, c.sec!.extractedValue),
+    }))
+    .filter((p): p is { id: string; n: number } => p.n !== null);
+  if (points.length < 2) return null;
+
+  const nums = points.map((p) => p.n);
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const med = median(nums);
+  const span = max - min || 1;
+  const pos = (n: number) => ((n - min) / span) * 100;
+
+  return (
+    <div className="mt-2 max-w-[260px]">
+      <div className="relative mx-[6px] h-[3px] rounded-full bg-[var(--color-line)]">
+        <span
+          className="absolute top-1/2 h-[10px] w-[2px] -translate-x-1/2 -translate-y-1/2 bg-[#aab4c4]"
+          style={{ left: `${pos(med)}%` }}
+        />
+        {points.map((p) => (
+          <span
+            key={p.id}
+            className="absolute top-1/2 h-[11px] w-[11px] -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white"
+            style={{ left: `${pos(p.n)}%`, background: colorById.get(p.id) }}
+          />
+        ))}
+      </div>
+      <div className="mt-1.5 text-[12px] text-[var(--color-muted)]">
+        {formatValue(section.valueKind, min)}–{formatValue(section.valueKind, max)}{" "}
+        · median {formatValue(section.valueKind, med)}
+      </div>
+    </div>
+  );
+}
+
 function SectionRow({
   section,
   districts,
   rowFor,
+  colorById,
   onOpen,
 }: {
   section: TaxonomySection;
   districts: District[];
   rowFor: (d: District, key: string) => ParsedSection | null;
+  colorById: Map<string, string>;
   onOpen: (d: District, s: ParsedSection) => void;
 }) {
   const cells = districts.map((d) => ({ d, sec: rowFor(d, section.key) }));
 
-  // Per-row stats from numeric values.
-  const stats = (() => {
-    if (section.valueKind === "text") return null;
-    const nums = cells
-      .filter((c) => c.sec)
-      .map((c) => parseNumeric(section.valueKind, c.sec!.extractedValue))
-      .filter((n): n is number => n !== null);
-    if (nums.length < 2) return null;
-    const min = Math.min(...nums);
-    const max = Math.max(...nums);
-    return `${formatValue(section.valueKind, min)}–${formatValue(
-      section.valueKind,
-      max,
-    )} · median ${formatValue(section.valueKind, median(nums))}`;
-  })();
-
   return (
-    <tr className="border-t border-[var(--color-line)] align-top">
-        <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left">
-          <div className="font-semibold">{section.label}</div>
-          {stats && (
-            <div className="mt-0.5 text-xs font-normal text-[var(--color-muted)]">
-              {stats}
-            </div>
-          )}
-        </th>
-        {cells.map(({ d, sec }) => (
-          <td key={d.id} className="px-4 py-3">
-            {sec ? (
-              <button
-                onClick={() => onOpen(d, sec)}
-                className="text-left hover:underline"
-                title="View source language"
-              >
-                <span className="font-medium">
-                  {highlightNumbers(sec.extractedValue).map((p, i) =>
-                    p.isNumber ? (
-                      <span
-                        key={i}
-                        className="rounded bg-[var(--color-accent-soft)] px-1 text-[var(--color-accent)]"
-                      >
-                        {p.text}
-                      </span>
-                    ) : (
-                      <span key={i}>{p.text}</span>
-                    ),
-                  )}
-                </span>
-                {sec.status === "flagged" && (
-                  <span className="ml-1 align-middle text-[11px] font-medium text-[var(--color-flag)]">
-                    ⚑
-                  </span>
+    <tr className="border-t border-[#eef1f6] align-top">
+      <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-4 py-3 text-left align-top">
+        <div className="font-semibold text-[var(--color-ink)]">{section.label}</div>
+        <RangeBar section={section} cells={cells} colorById={colorById} />
+      </th>
+      {cells.map(({ d, sec }) => (
+        <td key={d.id} className="px-4 py-3">
+          {sec ? (
+            <button
+              onClick={() => onOpen(d, sec)}
+              className="text-left hover:underline"
+              title="View source language"
+            >
+              <span className="font-medium text-[var(--color-ink)]">
+                {highlightNumbers(sec.extractedValue).map((p, i) =>
+                  p.isNumber ? (
+                    <span
+                      key={i}
+                      className="rounded bg-[var(--color-accent-soft)] px-1 font-semibold tabular-nums text-[var(--color-accent)]"
+                    >
+                      {p.text}
+                    </span>
+                  ) : (
+                    <span key={i}>{p.text}</span>
+                  ),
                 )}
-              </button>
-            ) : (
-              <span className="text-[var(--color-muted)]">—</span>
-            )}
-          </td>
-        ))}
+              </span>
+              {sec.status === "flagged" && (
+                <span className="ml-1 align-middle text-[11px] font-medium text-[var(--color-flag)]">
+                  ⚑
+                </span>
+              )}
+            </button>
+          ) : (
+            <span className="text-[var(--color-muted)]">—</span>
+          )}
+        </td>
+      ))}
     </tr>
   );
 }
 
-interface FilterItem {
-  id: string;
-  label: string;
-  active: boolean;
-  onToggle: () => void;
-}
-
-const COLLAPSED_CAP = 5;
-
-// When collapsed, show at most COLLAPSED_CAP rows — but always include every
-// selected item (filling the rest with unselected ones, in order) so a checked
-// option is never hidden below the fold while its row shows in the matrix.
-function capItems(items: FilterItem[], expanded: boolean): FilterItem[] {
-  if (expanded) return items;
-  const selectedCount = items.filter((i) => i.active).length;
-  let fillers = Math.max(COLLAPSED_CAP - selectedCount, 0);
-  const out: FilterItem[] = [];
-  for (const it of items) {
-    if (it.active) out.push(it);
-    else if (fillers > 0) {
-      out.push(it);
-      fillers--;
-    }
-  }
-  return out;
-}
-
-function FilterList({
+function RailHeader({
   label,
   count,
   onAll,
   onClear,
-  expanded,
-  onToggleExpand,
-  items,
 }: {
   label: string;
   count: string;
   onAll: () => void;
   onClear: () => void;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  items: FilterItem[];
 }) {
-  const visible = capItems(items, expanded);
-  const hidden = items.length - visible.length;
-
   return (
-    <div>
-      <div className="flex items-center gap-3">
-        <span className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
-          {label} ({count})
-        </span>
-        <button
-          onClick={onAll}
-          className="text-xs text-[var(--color-accent)] hover:underline"
-        >
-          All
-        </button>
-        <button
-          onClick={onClear}
-          className="text-xs text-[var(--color-muted)] hover:underline"
-        >
-          Clear
-        </button>
-      </div>
-      <div className="mt-1.5 space-y-0.5">
-        {items.length === 0 ? (
-          <p className="px-2 py-1 text-xs text-[var(--color-muted)]">
-            No matches.
-          </p>
-        ) : (
-          visible.map((it) => <CheckRow key={it.id} item={it} />)
-        )}
-      </div>
-      {(hidden > 0 || expanded) && (
-        <button
-          onClick={onToggleExpand}
-          className="mt-1 px-2 text-xs font-medium text-[var(--color-accent)] hover:underline"
-        >
-          {expanded ? "See less" : `See ${hidden} more`}
-        </button>
-      )}
+    <div className="flex items-center gap-3">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-muted)]">
+        {label} · {count}
+      </span>
+      <button
+        onClick={onAll}
+        className="text-xs text-[var(--color-accent)] hover:underline"
+      >
+        All
+      </button>
+      <button
+        onClick={onClear}
+        className="text-xs text-[var(--color-muted)] hover:underline"
+      >
+        Clear
+      </button>
     </div>
   );
 }
 
-function CheckRow({ item }: { item: FilterItem }) {
+function CheckRow({
+  label,
+  active,
+  dot,
+  onToggle,
+}: {
+  label: string;
+  active: boolean;
+  dot?: string;
+  onToggle: () => void;
+}) {
   return (
     <button
-      onClick={item.onToggle}
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-[var(--color-canvas)]"
+      onClick={onToggle}
+      className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-[var(--color-canvas)]"
     >
       <span
-        className={`grid h-4 w-4 shrink-0 place-items-center rounded border text-[10px] text-white ${
-          item.active
+        className={`grid h-4 w-4 shrink-0 place-items-center rounded-[5px] border text-[10px] text-white ${
+          active
             ? "border-[var(--color-accent)] bg-[var(--color-accent)]"
-            : "border-[var(--color-line)] bg-[var(--color-surface)]"
+            : "border-[#cdd5e2] bg-[var(--color-surface)]"
         }`}
         aria-hidden
       >
-        {item.active ? "✓" : ""}
+        {active ? "✓" : ""}
       </span>
-      <span className={item.active ? "" : "text-[var(--color-muted)]"}>
-        {item.label}
+      {dot && (
+        <span
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ background: dot }}
+        />
+      )}
+      <span className={active ? "text-[var(--color-ink)]" : "text-[var(--color-muted)]"}>
+        {label}
       </span>
     </button>
   );
@@ -523,45 +573,56 @@ function SourceDrawer({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden />
-      <div className="relative h-full w-full max-w-md overflow-y-auto border-l border-[var(--color-line)] bg-[var(--color-surface)] p-6 shadow-xl">
+      <div
+        className="absolute inset-0 bg-[rgba(16,27,48,.34)]"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="relative h-full w-full max-w-[440px] overflow-y-auto bg-[var(--color-surface)] p-7 shadow-[-12px_0_40px_rgba(16,27,48,.18)]">
         <div className="flex items-start justify-between">
           <div>
-            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-muted)]">
               {districtName}
             </div>
-            <h3 className="text-lg font-semibold">{sectionLabel}</h3>
+            <h3 className="font-display mt-1 text-[22px] font-semibold text-[var(--color-ink-deep)]">
+              {sectionLabel}
+            </h3>
           </div>
           <button
             onClick={onClose}
-            className="rounded-md px-2 py-1 text-sm text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+            aria-label="Close"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--color-line)] text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
           >
-            Close
+            <X size={16} />
           </button>
         </div>
 
-        <div className="mt-4">
-          <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">
+        <div className="mt-6">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-muted)]">
             Extracted value
           </div>
-          <div className="mt-1 text-base font-semibold">
-            {section.extractedValue}
+          <div className="mt-1 text-[19px] font-bold text-[var(--color-ink-deep)]">
+            {section.extractedValue || "—"}
           </div>
         </div>
 
-        <div className="mt-4">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-[var(--color-muted)]">
+        <div className="mt-6">
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-muted)]">
             Source language
             {typeof section.page === "number" && <span>· p.{section.page}</span>}
           </div>
-          <p className="mt-1 whitespace-pre-wrap rounded-lg bg-[var(--color-canvas)] p-3 text-sm leading-relaxed">
+          <p className="font-display mt-2 rounded-r-md border-l-2 border-[#c9d6ee] bg-[#f7f9fc] px-4 py-3 text-[15.5px] leading-[1.7] text-[#334155]">
             {section.sourceText || "No source text captured."}
           </p>
         </div>
 
-        <div className="mt-4 text-xs text-[var(--color-muted)]">
-          Confidence: {Math.round(section.confidence * 100)}% · Status:{" "}
-          {section.status}
+        <div className="mt-6 flex items-center gap-2 text-[13px]">
+          <span className="flex items-center gap-1 font-medium text-[var(--color-ok)]">
+            ✓ Human-verified
+          </span>
+          <span className="text-[var(--color-muted)]">
+            · {Math.round(section.confidence * 100)}% model confidence
+          </span>
         </div>
       </div>
     </div>

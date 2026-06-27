@@ -1,19 +1,32 @@
 @import "tailwindcss";
 
-/* Calm, civic palette — this is government/education software, not a startup landing page.
-   Slate neutrals + a single trustworthy blue accent + amber for "needs a human". */
+/* Calm, civic palette — government/education software. Slate neutrals, a single
+   trustworthy blue accent, amber for "needs a human", green for confirmed, violet
+   for uncategorized. Redesign tokens (see design handoff). */
 @theme {
-  --color-ink: #1e293b;
+  --color-ink: #1f2b40; /* strong headings / body-strong */
+  --color-ink-deep: #101b30; /* deepest headings, sidebar bg */
   --color-muted: #64748b;
-  --color-line: #e2e8f0;
+  --color-line: #e7ebf1;
   --color-surface: #ffffff;
-  --color-canvas: #f8fafc;
-  --color-accent: #2563eb;
-  --color-accent-soft: #eff6ff;
-  --color-flag: #d97706;
-  --color-flag-soft: #fffbeb;
-  --color-ok: #059669;
-  --color-ok-soft: #ecfdf5;
+  --color-canvas: #f4f6f9;
+
+  --color-accent: #2456c9;
+  --color-accent-soft: #eef3fd;
+
+  --color-flag: #b45309; /* needs review (amber) text */
+  --color-flag-soft: #fdf1de;
+  --color-ok: #047857; /* confirmed (green) text */
+  --color-ok-soft: #e3f5ec;
+  --color-cat: #5b21b6; /* uncategorized (violet) text */
+  --color-cat-soft: #ede9fe;
+  --color-cat-dot: #7c3aed;
+
+  /* Fonts — Public Sans for UI/body/data, Spectral for display + source text.
+     The --font-* vars are provided by next/font in app/layout.tsx. */
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-display: var(--font-spectral), ui-serif, Georgia, "Times New Roman", serif;
 }
 
 html,
@@ -23,5 +36,11 @@ body {
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
+}
+
+/* Spectral — applied to display headings, AI-summary numbers, the document
+   reader body, and verbatim source quotes. */
+.font-display {
+  font-family: var(--font-display);
 }
