@@ -42,10 +42,90 @@ export function locate(
   return { start: map[idx], end: map[idx + q.length - 1] + 1 };
 }
 
+// A located span never grows past this many raw chars — a guard against a bad
+// end anchor (or a runaway boundary expansion) highlighting half the page.
+const MAX_SPAN_CHARS = 1400;
+// How far the no-end-anchor fallback may grow past the start anchor.
+const EXPAND_CHARS = 600;
+
+/**
+ * Locate the full section span: from the START of `startQuery` to the END of
+ * `endQuery` (when that end anchor is present, sits after the start, and stays
+ * within MAX_SPAN_CHARS). Otherwise fall back to growing the start anchor out to
+ * the surrounding sentence/clause via `expandToBoundary`. Returns raw [start,
+ * end) offsets, or null when the start anchor itself can't be found.
+ */
+export function locateSpan(
+  pageText: string,
+  startQuery: string,
+  endQuery?: string,
+): { start: number; end: number } | null {
+  const startNorm = normalize(startQuery).norm.trim();
+  if (startNorm.length < 4) return null;
+  const { norm, map } = normalize(pageText);
+  const startIdx = norm.indexOf(startNorm);
+  if (startIdx === -1) return null;
+  const start = map[startIdx];
+
+  const endNorm = endQuery ? normalize(endQuery).norm.trim() : "";
+  if (endNorm.length >= 4) {
+    // Search for the end anchor strictly AFTER the start match.
+    const endIdx = norm.indexOf(endNorm, startIdx + startNorm.length);
+    if (endIdx !== -1) {
+      const end = map[endIdx + endNorm.length - 1] + 1;
+      if (end > start && end - start <= MAX_SPAN_CHARS) return { start, end };
+    }
+  }
+
+  // No usable end anchor — grow the start anchor to a natural boundary.
+  return expandToBoundary(pageText, { start, end: map[startIdx + startNorm.length - 1] + 1 });
+}
+
+/**
+ * Grow a located start range out to the surrounding sentence/clause: right to the
+ * next sentence terminator or blank line, and modestly left to the start of the
+ * current sentence/line. Capped at EXPAND_CHARS so it never runs away.
+ */
+export function expandToBoundary(
+  pageText: string,
+  range: { start: number; end: number },
+): { start: number; end: number } {
+  const isBreak = (c: string) => c === "." || c === ";" || c === "\n";
+
+  // Right: scan forward to the next sentence break (consume a trailing "." etc.),
+  // and stop early on a blank line (paragraph boundary).
+  let end = range.end;
+  const rightCap = Math.min(pageText.length, range.start + EXPAND_CHARS);
+  while (end < rightCap) {
+    const c = pageText[end];
+    if (c === "\n" && pageText[end + 1] === "\n") break; // blank line = new paragraph
+    if (isBreak(c)) {
+      if (c === ".") end += 1; // include the period
+      break;
+    }
+    end += 1;
+  }
+
+  // Left: scan back to just after the previous sentence break or line start.
+  let start = range.start;
+  const leftCap = Math.max(0, range.end - EXPAND_CHARS);
+  while (start > leftCap) {
+    const c = pageText[start - 1];
+    if (isBreak(c)) break;
+    start -= 1;
+  }
+  // Don't carry leading whitespace into the highlight.
+  while (start < range.start && /\s/.test(pageText[start])) start += 1;
+
+  return { start, end };
+}
+
 export interface AnchorItem {
   id: string;
-  /** The verbatim anchor, or a sourceText prefix as fallback. */
+  /** The verbatim start anchor, or a sourceText prefix as fallback. */
   query: string;
+  /** The verbatim end anchor, when the parser supplied one. */
+  endQuery?: string;
 }
 
 export interface Segment {
@@ -66,7 +146,7 @@ export function buildSegments(
   const ranges: { start: number; end: number; id: string }[] = [];
   for (const it of items) {
     if (!it.query) continue;
-    const r = locate(pageText, it.query);
+    const r = locateSpan(pageText, it.query, it.endQuery);
     if (r) ranges.push({ ...r, id: it.id });
   }
   // Earliest start first; on a tie prefer the longer span.

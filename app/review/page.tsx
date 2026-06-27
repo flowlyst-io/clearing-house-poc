@@ -127,6 +127,7 @@ type Item =
       index: number;
       section: ParsedSection;
       query: string;
+      endQuery?: string;
     }
   | {
       id: string;
@@ -134,6 +135,7 @@ type Item =
       index: number;
       unmatched: UnmatchedSection;
       query: string;
+      endQuery?: string;
     };
 
 function toneOf(it: Item) {
@@ -178,6 +180,7 @@ function DistrictReview({
       index,
       section,
       query: section.anchor || section.sourceText.slice(0, 80),
+      endQuery: section.anchorEnd,
     })),
     ...(district.unmatched ?? []).map((unmatched, index) => ({
       id: `u:${index}`,
@@ -185,6 +188,7 @@ function DistrictReview({
       index,
       unmatched,
       query: unmatched.anchor || unmatched.sourceText.slice(0, 80),
+      endQuery: unmatched.anchorEnd,
     })),
   ];
   const byId = new Map(items.map((it) => [it.id, it]));
@@ -194,6 +198,7 @@ function DistrictReview({
   const anchorItems: AnchorItem[] = items.map((it) => ({
     id: it.id,
     query: it.query,
+    endQuery: it.endQuery,
   }));
   const perPage = pages.map((p) => buildSegments(p, anchorItems));
   const placed = new Set<string>();
@@ -234,6 +239,7 @@ function DistrictReview({
       extractedValue: "",
       sourceText: u.sourceText,
       anchor: u.anchor,
+      anchorEnd: u.anchorEnd,
       confidence: 1,
       status: "flagged",
       note: "Assigned from uncategorized — set the value, then confirm.",

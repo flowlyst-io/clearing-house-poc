@@ -63,6 +63,7 @@ export async function POST(req: NextRequest) {
                     extractedValue: { type: "string" },
                     sourceText: { type: "string" },
                     anchor: { type: "string" },
+                    anchorEnd: { type: "string" },
                     confidence: { type: "number" },
                   },
                   required: [
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
                     "extractedValue",
                     "sourceText",
                     "anchor",
+                    "anchorEnd",
                     "confidence",
                   ],
                   additionalProperties: false,
@@ -84,8 +86,9 @@ export async function POST(req: NextRequest) {
                     label: { type: "string" },
                     sourceText: { type: "string" },
                     anchor: { type: "string" },
+                    anchorEnd: { type: "string" },
                   },
-                  required: ["label", "sourceText", "anchor"],
+                  required: ["label", "sourceText", "anchor", "anchorEnd"],
                   additionalProperties: false,
                 },
               },
@@ -106,11 +109,12 @@ export async function POST(req: NextRequest) {
         "- found: true only if the contract actually addresses it.",
         "- extractedValue: the concise, scannable value described by VALUE above (e.g. '5 days', '$48,000 start / $89,400 max', '85% individual / 75% family'). Keep it short — it goes on a comparison card. If found is false, use an empty string.",
         "- sourceText: the verbatim contract language for this section (you may repair obvious OCR spacing). One to a few sentences — enough to justify the value. Empty string if not found.",
-        "- anchor: a SHORT substring (about 6-15 words) copied EXACTLY from the contract text where this section begins — character for character, INCLUDING any OCR quirks (split words, stray spaces). Do NOT repair it. This is used to locate the section inside the document, so it must match the provided text verbatim. Empty string if not found.",
+        "- anchor: a SHORT substring (about 6-15 words) copied EXACTLY from the contract text where this section BEGINS — character for character, INCLUDING any OCR quirks (split words, stray spaces). Do NOT repair it. This is used to locate the section inside the document, so it must match the provided text verbatim. Empty string if not found.",
+        "- anchorEnd: a SHORT substring (about 6-15 words) copied EXACTLY from the contract text where this section ENDS — its last clause or value. Same verbatim/OCR rules as anchor (do NOT repair). It MUST appear AFTER anchor in the text; together they bracket the full section so the whole passage can be highlighted, not just its first words. Use an empty string when the section is short enough that anchor already covers it, or when not found.",
         "- confidence: 0.0–1.0, honest. Lower it when the value is implied rather than stated, when OCR made the clause hard to read, or when the contract is ambiguous. This drives which sections a human reviews, so do not inflate it.",
         "",
         "Also infer the district name and the contract term (e.g. '2023–2027') from the document.",
-        "Put any substantive section that does NOT fit the taxonomy into 'unmatched' (label + a short source excerpt + an exact verbatim 'anchor', same rules as above) so a person can place it. Do not force-fit.",
+        "Put any substantive section that does NOT fit the taxonomy into 'unmatched' (label + a short source excerpt + exact verbatim 'anchor' and 'anchorEnd', same rules as above) so a person can place it. Do not force-fit.",
       ].join("\n"),
       messages: [
         {
@@ -135,9 +139,15 @@ export async function POST(req: NextRequest) {
         extractedValue: string;
         sourceText: string;
         anchor?: string;
+        anchorEnd?: string;
         confidence: number;
       }[];
-      unmatched: { label: string; sourceText: string; anchor?: string }[];
+      unmatched: {
+        label: string;
+        sourceText: string;
+        anchor?: string;
+        anchorEnd?: string;
+      }[];
     };
 
     // Keep only found sections; status from confidence (low → flagged for a human).
@@ -150,6 +160,7 @@ export async function POST(req: NextRequest) {
           extractedValue: s.extractedValue.trim(),
           sourceText: s.sourceText.trim(),
           anchor: s.anchor?.trim() || undefined,
+          anchorEnd: s.anchorEnd?.trim() || undefined,
           confidence: s.confidence,
           status: low ? "flagged" : "confirmed",
           note: low ? "Low confidence — please verify." : undefined,
@@ -164,6 +175,7 @@ export async function POST(req: NextRequest) {
         label: u.label,
         sourceText: u.sourceText,
         anchor: u.anchor?.trim() || undefined,
+        anchorEnd: u.anchorEnd?.trim() || undefined,
       })),
     };
 

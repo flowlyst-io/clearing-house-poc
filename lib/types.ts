@@ -17,9 +17,14 @@ export interface ParsedSection {
   note?: string;
   /** Best-effort source page, if known. */
   page?: number;
-  /** Verbatim locator copied exactly from the document text, used to highlight
-   * this section inside the document reader. May be absent for seed data. */
+  /** Verbatim locator copied exactly from the document text, marking where this
+   * section BEGINS. Used to highlight the section inside the document reader.
+   * May be absent for seed data. */
   anchor?: string;
+  /** Verbatim locator copied exactly from the document text, marking where this
+   * section ENDS. With `anchor` it defines the full span to highlight. Absent for
+   * short sections, seed data, and contracts parsed before this feature. */
+  anchorEnd?: string;
 }
 
 /** Content the parser found but couldn't confidently place in the taxonomy. */
@@ -28,8 +33,12 @@ export interface UnmatchedSection {
   label: string;
   /** The text, so a reviewer can read it and assign a taxonomy slot. */
   sourceText: string;
-  /** Verbatim locator copied exactly from the document text (for highlighting). */
+  /** Verbatim locator copied exactly from the document text, marking where this
+   * passage BEGINS (for highlighting). */
   anchor?: string;
+  /** Verbatim locator marking where this passage ENDS; with `anchor` it defines
+   * the full span to highlight. Absent for short passages. */
+  anchorEnd?: string;
 }
 
 export type DistrictSource = "seed" | "parsed";
