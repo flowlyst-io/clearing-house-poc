@@ -2,106 +2,98 @@
 
 import { useEffect, useState } from "react";
 import type { District } from "./types";
-import { SEED_DISTRICTS } from "./seed";
 
-// localStorage is the contract pool for the POC (per the README — "local storage
-// is fine for now"). On first load we seed the three peer districts.
+// The contract pool lives in Neon Postgres, reached through /api/districts. This
+// module keeps the same small API the pages already use (useDistricts +
+// add/update/remove) so callers barely change. Mutations are async and, on
+// success, dispatch EVT — every mounted useDistricts re-fetches in response,
+// keeping separate views (Review tabs, Compare) in sync within a tab.
+//
+// Note: the list (useDistricts) omits each district's `pages` (the document
+// text) to keep payloads small. Review fetches a single district via getDistrict
+// to render the document reader.
 
-const KEY = "clearinghouse.districts.v1";
 const EVT = "clearinghouse:districts-changed";
 
-function read(): District[] {
-  if (typeof window === "undefined") return SEED_DISTRICTS;
+function notify() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(EVT));
+}
+
+async function fetchDistricts(): Promise<District[]> {
+  const res = await fetch("/api/districts");
+  if (!res.ok) throw new Error("Failed to load districts");
+  return (await res.json()) as District[];
+}
+
+async function readError(res: Response, fallback: string): Promise<string> {
   try {
-    const raw = window.localStorage.getItem(KEY);
-    if (!raw) {
-      window.localStorage.setItem(KEY, JSON.stringify(SEED_DISTRICTS));
-      return SEED_DISTRICTS;
-    }
-    return JSON.parse(raw) as District[];
+    const body = (await res.json()) as { error?: string };
+    return body.error || fallback;
   } catch {
-    return SEED_DISTRICTS;
+    return fallback;
   }
 }
 
-/** Thrown when even after reclaiming space the pool won't fit in localStorage. */
-export class StorageFullError extends Error {
-  constructor() {
-    super(
-      "Your browser's local storage is full. Remove a contract (Discard in Review) and try again.",
-    );
-    this.name = "StorageFullError";
-  }
+export async function addDistrict(d: District): Promise<District> {
+  const res = await fetch("/api/districts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(d),
+  });
+  if (!res.ok) throw new Error(await readError(res, "Failed to save district"));
+  const created = (await res.json()) as District;
+  notify();
+  return created;
 }
 
-function commit(districts: District[]): boolean {
-  try {
-    window.localStorage.setItem(KEY, JSON.stringify(districts));
-    window.dispatchEvent(new Event(EVT));
-    return true;
-  } catch (e) {
-    // QuotaExceededError (name/code varies across browsers).
-    if (
-      e instanceof DOMException &&
-      (e.name === "QuotaExceededError" ||
-        e.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
-        e.code === 22)
-    ) {
-      return false;
-    }
-    throw e;
-  }
+export async function updateDistrict(
+  id: string,
+  patch: Partial<District>,
+): Promise<District> {
+  const res = await fetch(`/api/districts/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await readError(res, "Failed to update district"));
+  const updated = (await res.json()) as District;
+  notify();
+  return updated;
 }
 
-function write(districts: District[]) {
-  if (typeof window === "undefined") return;
-  if (commit(districts)) return;
-
-  // Quota exceeded. The big payload is each district's stored document text
-  // (`pages`), only needed by the Review reader. Shed it oldest-first and retry;
-  // a district without `pages` simply falls back to the no-document review view.
-  const shed = districts.map((d) => ({ ...d }));
-  const oldestFirst = [...shed].sort((a, b) => a.createdAt - b.createdAt);
-  for (const d of oldestFirst) {
-    if (!d.pages) continue;
-    d.pages = undefined;
-    if (commit(shed)) return;
-  }
-  throw new StorageFullError();
+export async function removeDistrict(id: string): Promise<void> {
+  const res = await fetch(`/api/districts/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await readError(res, "Failed to remove district"));
+  notify();
 }
 
-export function getDistricts(): District[] {
-  return read();
+/** Fetch a single district WITH its per-page document text (the list omits it). */
+export async function getDistrict(id: string): Promise<District> {
+  const res = await fetch(`/api/districts/${id}`);
+  if (!res.ok) throw new Error(await readError(res, "Failed to load district"));
+  return (await res.json()) as District;
 }
 
-export function addDistrict(d: District) {
-  write([...read(), d]);
-}
-
-export function updateDistrict(id: string, patch: Partial<District>) {
-  write(read().map((d) => (d.id === id ? { ...d, ...patch } : d)));
-}
-
-export function removeDistrict(id: string) {
-  write(read().filter((d) => d.id !== id));
-}
-
-export function resetToSeed() {
-  write(SEED_DISTRICTS);
-}
-
-/** Reactive view of the pool. Re-renders on any change in this or another tab. */
+/** Reactive view of the pool (without `pages`). Re-fetches on any mutation. */
 export function useDistricts(): District[] {
-  const [districts, setDistricts] = useState<District[]>(SEED_DISTRICTS);
+  const [districts, setDistricts] = useState<District[]>([]);
 
   useEffect(() => {
-    const sync = () => setDistricts(read());
+    let active = true;
+    const sync = () => {
+      fetchDistricts()
+        .then((d) => {
+          if (active) setDistricts(d);
+        })
+        .catch(() => {
+          /* leave the last good list in place on a transient failure */
+        });
+    };
     sync();
     window.addEventListener(EVT, sync);
-    window.addEventListener("storage", sync);
     return () => {
+      active = false;
       window.removeEventListener(EVT, sync);
-      window.removeEventListener("storage", sync);
     };
   }, []);
 

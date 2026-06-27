@@ -91,16 +91,17 @@ export default function UploadPage() {
         inPool: false, // enters the pool only after a human confirms in Review
         createdAt: Date.now(),
       };
+      // Persist to Neon before navigating — Review fetches this district by id.
       try {
-        addDistrict(district);
+        await addDistrict(district);
       } catch (storeErr) {
-        // Out of localStorage space — honest message, not "couldn't reach parser".
         setError({
           message:
-            storeErr instanceof Error
+            (storeErr instanceof Error
               ? storeErr.message
-              : "Couldn't save the contract locally.",
-          retryable: false,
+              : "Couldn't save the contract") +
+            " — your parse succeeded; try saving again.",
+          retryable: true,
         });
         setPhase("error");
         return;

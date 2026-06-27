@@ -1,9 +1,14 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useDistricts, updateDistrict, removeDistrict } from "@/lib/store";
+import {
+  useDistricts,
+  getDistrict,
+  updateDistrict,
+  removeDistrict,
+} from "@/lib/store";
 import { TAXONOMY, sectionLabel } from "@/lib/taxonomy";
 import type { District, ParsedSection, UnmatchedSection } from "@/lib/types";
 import { buildSegments, type AnchorItem } from "@/lib/anchor";
@@ -17,7 +22,7 @@ export default function ReviewPage() {
 }
 
 function ReviewInner() {
-  const districts = useDistricts();
+  const districts = useDistricts(); // list (no `pages`) — drives the tab strip
   const params = useSearchParams();
   const router = useRouter();
 
@@ -32,26 +37,51 @@ function ReviewInner() {
     [districts],
   );
 
-  const focusId = params.get("d");
-  const district =
-    districts.find((d) => d.id === focusId) ?? needsReview[0] ?? null;
+  const focusId = params.get("d") ?? needsReview[0]?.id ?? null;
 
-  if (!district) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-xl font-semibold">Review</h1>
-        <p className="text-sm text-[var(--color-muted)]">
-          Nothing waiting for review. Every district in the pool has been
-          confirmed.
-        </p>
-        <Link
-          href="/upload"
-          className="inline-block rounded-md bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white"
-        >
-          Add a contract →
-        </Link>
-      </div>
-    );
+  // The focused district is fetched WITH its per-page text so the document
+  // reader can render it (the list omits `pages`). Mutations replace it in place
+  // via setFocused, using the full district the API returns.
+  const [focused, setFocused] = useState<District | null>(null);
+  const [docError, setDocError] = useState(false);
+
+  useEffect(() => {
+    if (!focusId) {
+      setFocused(null);
+      return;
+    }
+    let active = true;
+    setFocused(null);
+    setDocError(false);
+    getDistrict(focusId)
+      .then((d) => active && setFocused(d))
+      .catch(() => active && setDocError(true));
+    return () => {
+      active = false;
+    };
+  }, [focusId]);
+
+  if (!focusId) {
+    // The DB always holds the seed districts, so a loaded-but-empty queue means
+    // everything is confirmed; an empty list means we're still loading.
+    if (districts.length > 0 && needsReview.length === 0) {
+      return (
+        <div className="space-y-4">
+          <h1 className="text-xl font-semibold">Review</h1>
+          <p className="text-sm text-[var(--color-muted)]">
+            Nothing waiting for review. Every district in the pool has been
+            confirmed.
+          </p>
+          <Link
+            href="/upload"
+            className="inline-block rounded-md bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white"
+          >
+            Add a contract →
+          </Link>
+        </div>
+      );
+    }
+    return null;
   }
 
   return (
@@ -63,7 +93,7 @@ function ReviewInner() {
               key={d.id}
               href={`/review?d=${d.id}`}
               className={`rounded-md border px-3 py-1 text-sm ${
-                d.id === district.id
+                d.id === focusId
                   ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-white"
                   : "border-[var(--color-line)] bg-[var(--color-surface)]"
               }`}
@@ -73,7 +103,18 @@ function ReviewInner() {
           ))}
         </div>
       )}
-      <DistrictReview key={district.id} district={district} router={router} />
+      {focused ? (
+        <DistrictReview
+          key={focused.id}
+          district={focused}
+          router={router}
+          onChange={setFocused}
+        />
+      ) : (
+        <p className="text-sm text-[var(--color-muted)]">
+          {docError ? "Couldn't load this contract." : "Loading…"}
+        </p>
+      )}
     </div>
   );
 }
@@ -121,11 +162,14 @@ function toneOf(it: Item) {
 function DistrictReview({
   district,
   router,
+  onChange,
 }: {
   district: District;
   router: ReturnType<typeof useRouter>;
+  onChange: (d: District) => void;
 }) {
   const [active, setActive] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const items: Item[] = [
     ...district.sections.map((section, index) => ({
@@ -164,9 +208,21 @@ function DistrictReview({
   const uncategorized = items.filter((it) => it.kind === "unmatched");
   const totalSections = district.sections.length;
 
-  // ---- mutations (reused from the prior card-based review) ----
+  // ---- mutations: each is a persisted PATCH; surface failures, refresh in place ----
+  async function save(patch: Partial<District>): Promise<boolean> {
+    try {
+      setSaveError(null);
+      const updated = await updateDistrict(district.id, patch);
+      onChange(updated); // server returns the full district (incl. pages)
+      return true;
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Couldn't save your change.");
+      return false;
+    }
+  }
+
   function patchSection(index: number, patch: Partial<ParsedSection>) {
-    updateDistrict(district.id, {
+    void save({
       sections: district.sections.map((s, i) =>
         i === index ? { ...s, ...patch } : s,
       ),
@@ -182,28 +238,31 @@ function DistrictReview({
       status: "flagged",
       note: "Assigned from uncategorized — set the value, then confirm.",
     };
-    updateDistrict(district.id, {
+    void save({
       sections: [...district.sections, newSection],
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
-    });
-    setActive(null);
+    }).then((ok) => ok && setActive(null));
   }
   function dismissUnmatched(u: UnmatchedSection) {
-    updateDistrict(district.id, {
+    void save({
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
-    });
-    setActive(null);
+    }).then((ok) => ok && setActive(null));
   }
-  function addToPool() {
-    // Drop the stored document text once pooled — Compare doesn't need it, and
-    // keeping full text for every district would bloat localStorage.
-    updateDistrict(district.id, { inPool: true, pages: undefined });
-    router.push("/compare");
+  async function addToPool() {
+    // Pages stay in Postgres (the list query excludes them, so Compare's load
+    // isn't affected); no need to shed text the way the localStorage store did.
+    if (await save({ inPool: true })) router.push("/compare");
   }
-  function discard() {
+  async function discard() {
     if (confirm(`Remove ${district.name} from the workspace?`)) {
-      removeDistrict(district.id);
-      router.push("/review");
+      try {
+        await removeDistrict(district.id);
+        router.push("/review");
+      } catch (e) {
+        setSaveError(
+          e instanceof Error ? e.message : "Couldn't remove the district.",
+        );
+      }
     }
   }
 
@@ -329,6 +388,12 @@ function DistrictReview({
           </button>
         </div>
       </div>
+
+      {saveError && (
+        <div className="rounded-md bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
+          {saveError}
+        </div>
+      )}
 
       {/* Legend */}
       <div className="flex flex-wrap gap-4 text-xs text-[var(--color-muted)]">
