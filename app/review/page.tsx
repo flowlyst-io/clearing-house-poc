@@ -170,8 +170,33 @@ function DistrictReview({
   router: ReturnType<typeof useRouter>;
   onChange: (d: District) => void;
 }) {
-  const [active, setActive] = useState<string | null>(null);
+  // Multiple sections can be open at once — clicking one no longer closes the
+  // others, and there's no modal overlay, so you can scroll and click around
+  // freely while reviewing several at a time.
+  const [active, setActive] = useState<Set<string>>(() => new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  function toggle(id: string) {
+    setActive((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function close(id: string) {
+    setActive((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }
+  // The uncategorized list reindexes on assign/dismiss, so positional u: ids
+  // would point at the wrong item afterwards — drop them (section popovers stay open).
+  function closeUnmatchedPopovers() {
+    setActive((prev) => new Set([...prev].filter((id) => !id.startsWith("u:"))));
+  }
 
   const items: Item[] = [
     ...district.sections.map((section, index) => ({
@@ -247,12 +272,12 @@ function DistrictReview({
     void save({
       sections: [...district.sections, newSection],
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
-    }).then((ok) => ok && setActive(null));
+    }).then((ok) => ok && closeUnmatchedPopovers());
   }
   function dismissUnmatched(u: UnmatchedSection) {
     void save({
       unmatched: (district.unmatched ?? []).filter((x) => x !== u),
-    }).then((ok) => ok && setActive(null));
+    }).then((ok) => ok && closeUnmatchedPopovers());
   }
   async function addToPool() {
     // Pages stay in Postgres (the list query excludes them, so Compare's load
@@ -273,8 +298,9 @@ function DistrictReview({
   }
 
   function focus(id: string) {
-    setActive(id);
-    if (hasDoc && placed.has(id)) {
+    const willOpen = !active.has(id);
+    toggle(id);
+    if (willOpen && hasDoc && placed.has(id)) {
       // Scroll the real scroll container (#main-scroll), not the window — compute
       // the mark's offset relative to the container and center it.
       requestAnimationFrame(() => {
@@ -337,7 +363,7 @@ function DistrictReview({
               </button>
             )}
             <button
-              onClick={() => setActive(null)}
+              onClick={() => close(it.id)}
               className="rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
             >
               Close
@@ -370,7 +396,7 @@ function DistrictReview({
             Dismiss
           </button>
           <button
-            onClick={() => setActive(null)}
+            onClick={() => close(it.id)}
             className="rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
           >
             Close
@@ -450,12 +476,12 @@ function DistrictReview({
                     const it = byId.get(seg.itemId);
                     if (!it) return <span key={si}>{seg.text}</span>;
                     const tone = toneOf(it);
-                    const isActive = active === it.id;
+                    const isActive = active.has(it.id);
                     return (
                       <span key={si} className="relative">
                         <mark
                           id={`hl-${it.id}`}
-                          onClick={() => setActive(isActive ? null : it.id)}
+                          onClick={() => toggle(it.id)}
                           className={`cursor-pointer rounded-[4px] px-[3px] py-[1px] ${tone.mark} ${
                             isActive ? `ring-2 ${tone.ring}` : ""
                           }`}
@@ -481,11 +507,6 @@ function DistrictReview({
             reader, or is seed data). Review the items on the right; re-upload the
             PDF to see the full document view.
           </div>
-        )}
-
-        {/* Click-away layer for an open in-document popover */}
-        {active && hasDoc && placed.has(active) && (
-          <div className="fixed inset-0 z-20" onClick={() => setActive(null)} aria-hidden />
         )}
 
         {/* Synced index */}
@@ -574,7 +595,7 @@ function IndexGroup({
 }: {
   title: string;
   items: Item[];
-  active: string | null;
+  active: Set<string>;
   placed: Set<string>;
   hasDoc: boolean;
   onFocus: (id: string) => void;
@@ -604,7 +625,7 @@ function IndexGroup({
               it.kind === "section"
                 ? it.section.extractedValue || "no value set"
                 : it.unmatched.sourceText.slice(0, 60) + "…";
-            const isActive = active === it.id;
+            const isActive = active.has(it.id);
             const notLocated = hasDoc && !placed.has(it.id);
             const inlineControls = isActive && (!hasDoc || !placed.has(it.id));
             return (
