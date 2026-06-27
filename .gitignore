@@ -27,3 +27,6 @@ next-env.d.ts
 
 # sample contracts — data, not code (large binaries; keep out of git history)
 *.pdf
+
+# design handoff assets — not part of the app
+design_handoff_clearinghouse_redesign/
