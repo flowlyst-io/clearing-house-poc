@@ -17,6 +17,9 @@ export interface ParsedSection {
   note?: string;
   /** Best-effort source page, if known. */
   page?: number;
+  /** Verbatim locator copied exactly from the document text, used to highlight
+   * this section inside the document reader. May be absent for seed data. */
+  anchor?: string;
 }
 
 /** Content the parser found but couldn't confidently place in the taxonomy. */
@@ -25,6 +28,8 @@ export interface UnmatchedSection {
   label: string;
   /** The text, so a reviewer can read it and assign a taxonomy slot. */
   sourceText: string;
+  /** Verbatim locator copied exactly from the document text (for highlighting). */
+  anchor?: string;
 }
 
 export type DistrictSource = "seed" | "parsed";
@@ -36,6 +41,9 @@ export interface District {
   term?: string;
   source: DistrictSource;
   sections: ParsedSection[];
+  /** Per-page extracted text — powers the document reader in Review.
+   * Absent for seed data and contracts parsed before this feature. */
+  pages?: string[];
   /** Surfaced in Review so nothing fails silently. */
   unmatched?: UnmatchedSection[];
   /** Until every flagged section is resolved, a district is "in review". */

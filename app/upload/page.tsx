@@ -15,6 +15,8 @@ export default function UploadPage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [districtName, setDistrictName] = useState("");
   const [text, setText] = useState("");
+  // Per-page text from the PDF (null when the user pasted text instead).
+  const [pages, setPages] = useState<string[] | null>(null);
   const [meta, setMeta] = useState<{ pages?: number; chars: number }>({
     chars: 0,
   });
@@ -37,9 +39,11 @@ export default function UploadPage() {
     }
     setPhase("extracting");
     try {
-      const { text: extracted, pages } = await extractPdfText(file);
-      setText(extracted);
-      setMeta({ pages, chars: extracted.length });
+      const { pages: extracted } = await extractPdfText(file);
+      const combined = extracted.join("\n\n");
+      setPages(extracted);
+      setText(combined);
+      setMeta({ pages: extracted.length, chars: combined.length });
       setPhase("ready");
     } catch (e) {
       setError({
@@ -81,10 +85,26 @@ export default function UploadPage() {
         source: "parsed",
         sections: data.sections,
         unmatched: data.unmatched,
+        // Persist the document text for the Review reader. PDF → per-page;
+        // pasted text → a single page.
+        pages: pages && pages.length ? pages : [text],
         inPool: false, // enters the pool only after a human confirms in Review
         createdAt: Date.now(),
       };
-      addDistrict(district);
+      try {
+        addDistrict(district);
+      } catch (storeErr) {
+        // Out of localStorage space — honest message, not "couldn't reach parser".
+        setError({
+          message:
+            storeErr instanceof Error
+              ? storeErr.message
+              : "Couldn't save the contract locally.",
+          retryable: false,
+        });
+        setPhase("error");
+        return;
+      }
       router.push(`/review?d=${district.id}`);
     } catch {
       // fetch threw before any response — almost always transient/network.
@@ -164,6 +184,7 @@ export default function UploadPage() {
           value={text}
           onChange={(e) => {
             setText(e.target.value);
+            setPages(null); // manual edit → treat as a single pasted page
             setMeta({ chars: e.target.value.length });
             if (phase === "idle" || phase === "error") setPhase("ready");
           }}

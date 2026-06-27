@@ -7,7 +7,7 @@
 export async function extractPdfText(
   file: File,
   onProgress?: (page: number, total: number) => void,
-): Promise<{ text: string; pages: number }> {
+): Promise<{ pages: string[] }> {
   const pdfjs = await import("pdfjs-dist");
   // Turbopack/Webpack bundle the worker from this URL.
   pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -17,17 +17,31 @@ export async function extractPdfText(
 
   const data = await file.arrayBuffer();
   const doc = await pdfjs.getDocument({ data }).promise;
-  const out: string[] = [];
+  const pages: string[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
-    const line = content.items
-      .map((it) => ("str" in it ? it.str : ""))
-      .join(" ");
-    out.push(line);
+    // Preserve the PDF's own line breaks: pdfjs marks line ends with `hasEOL`.
+    // This makes the document reader render with real line structure instead of
+    // one run-on block. (Anchor matching collapses whitespace, so newlines are
+    // transparent to highlighting.)
+    let buf = "";
+    for (const it of content.items) {
+      if (!("str" in it)) continue;
+      buf += it.str;
+      buf += "hasEOL" in it && it.hasEOL ? "\n" : " ";
+    }
+    const text = buf
+      .replace(/[ \t]+/g, " ") // collapse runs of spaces
+      .replace(/ *\n/g, "\n") // trim spaces before newlines
+      .replace(/\n{3,}/g, "\n\n") // cap blank-line runs
+      .trim();
+    pages.push(text);
     onProgress?.(i, doc.numPages);
   }
 
-  return { text: out.join("\n\n"), pages: doc.numPages };
+  // Per-page text powers the document reader; callers join pages for the parser
+  // payload and derive page count / char length as needed.
+  return { pages };
 }

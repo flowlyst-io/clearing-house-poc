@@ -24,10 +24,50 @@ function read(): District[] {
   }
 }
 
+/** Thrown when even after reclaiming space the pool won't fit in localStorage. */
+export class StorageFullError extends Error {
+  constructor() {
+    super(
+      "Your browser's local storage is full. Remove a contract (Discard in Review) and try again.",
+    );
+    this.name = "StorageFullError";
+  }
+}
+
+function commit(districts: District[]): boolean {
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify(districts));
+    window.dispatchEvent(new Event(EVT));
+    return true;
+  } catch (e) {
+    // QuotaExceededError (name/code varies across browsers).
+    if (
+      e instanceof DOMException &&
+      (e.name === "QuotaExceededError" ||
+        e.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+        e.code === 22)
+    ) {
+      return false;
+    }
+    throw e;
+  }
+}
+
 function write(districts: District[]) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify(districts));
-  window.dispatchEvent(new Event(EVT));
+  if (commit(districts)) return;
+
+  // Quota exceeded. The big payload is each district's stored document text
+  // (`pages`), only needed by the Review reader. Shed it oldest-first and retry;
+  // a district without `pages` simply falls back to the no-document review view.
+  const shed = districts.map((d) => ({ ...d }));
+  const oldestFirst = [...shed].sort((a, b) => a.createdAt - b.createdAt);
+  for (const d of oldestFirst) {
+    if (!d.pages) continue;
+    d.pages = undefined;
+    if (commit(shed)) return;
+  }
+  throw new StorageFullError();
 }
 
 export function getDistricts(): District[] {
