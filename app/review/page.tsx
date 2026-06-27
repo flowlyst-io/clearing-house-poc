@@ -309,11 +309,15 @@ function DistrictReview({
               </option>
             ))}
           </select>
-          <input
+          <textarea
             value={s.extractedValue}
             onChange={(e) => patchSection(it.index, { extractedValue: e.target.value })}
             placeholder="Value (e.g. 5 days)"
-            className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            rows={2}
+            // Wraps long values (a full salary schedule) instead of clipping them
+            // to one line; field-sizing grows it to fit, capped so the popover
+            // can't run off-screen (scrolls past the cap).
+            className="w-full resize-y rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm leading-snug [field-sizing:content] min-h-[2.25rem] max-h-40 overflow-y-auto"
           />
           <div className="flex gap-2">
             {s.status === "flagged" ? (
