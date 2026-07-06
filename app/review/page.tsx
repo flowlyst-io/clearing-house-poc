@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -9,9 +9,15 @@ import {
   updateDistrict,
   removeDistrict,
 } from "@/lib/store";
-import { TAXONOMY, sectionLabel } from "@/lib/taxonomy";
+import { Highlighter } from "lucide-react";
+import { TAXONOMY, TAXONOMY_BY_KEY, sectionLabel } from "@/lib/taxonomy";
 import type { District, ParsedSection, UnmatchedSection } from "@/lib/types";
-import { buildSegments, type AnchorItem } from "@/lib/anchor";
+import {
+  buildSegments,
+  locate,
+  selectionToAnchors,
+  type AnchorItem,
+} from "@/lib/anchor";
 
 export default function ReviewPage() {
   return (
@@ -174,6 +180,24 @@ function toneOf(it: Item) {
       };
 }
 
+// A text selection captured from the reader, awaiting a destination. `anchor`/
+// `anchorEnd` are verbatim locators (from selectionToAnchors) that re-highlight
+// it once saved; `rect` is the toolbar position relative to the reader column.
+// `overlaps` flags an intersection with an already-highlighted span, so the
+// toolbar can warn that only one of the two will stay marked (earliest wins).
+interface PendingSelection {
+  pageIndex: number;
+  sourceText: string;
+  anchor: string;
+  anchorEnd?: string;
+  overlaps: boolean;
+  rect: { top: number; left: number };
+}
+
+// Single source of truth for the toolbar's width — used both to size it and to
+// clamp its position inside the reader column.
+const TOOLBAR_WIDTH = 280;
+
 function DistrictReview({
   district,
   router,
@@ -188,6 +212,12 @@ function DistrictReview({
   // freely while reviewing several at a time.
   const [active, setActive] = useState<Set<string>>(() => new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // A pending text selection captured from the document reader, offered up in a
+  // floating toolbar to become a new section or be appended to an existing one.
+  // Positioned relative to the reader column (colRef), which is `relative`.
+  const [sel, setSel] = useState<PendingSelection | null>(null);
+  const colRef = useRef<HTMLDivElement>(null);
 
   function toggle(id: string) {
     setActive((prev) => {
@@ -319,6 +349,150 @@ function DistrictReview({
     }
   }
 
+  // ---- select-to-add: capture a reader selection, offer it in a toolbar ----
+  function clearSelection() {
+    if (typeof window !== "undefined") window.getSelection()?.removeAllRanges();
+    setSel(null);
+  }
+
+  // Escape cancels; a window resize reflows the text so the captured rect goes
+  // stale — clear it. Scrolling does NOT clear: the toolbar is absolutely
+  // positioned inside the reader column, so it stays anchored to its text while
+  // #main-scroll scrolls. (A scroll listener here also breaks interaction —
+  // focusing the toolbar's own input can scroll it into view, which would
+  // dismiss the toolbar mid-click.)
+  useEffect(() => {
+    const clear = () => setSel(null);
+    // Escape also drops the native selection — leaving it active makes a re-drag
+    // over the same text start a browser text-drag instead of a new selection.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      window.getSelection()?.removeAllRanges();
+      setSel(null);
+    };
+    window.addEventListener("resize", clear);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("resize", clear);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  // Every rejection path clears any open toolbar: a plain click or an unusable
+  // selection means the user has moved on, so a lingering toolbar would be stale.
+  function onReaderMouseUp() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setSel(null);
+      return;
+    }
+    const raw = selection.toString();
+    if (!raw.trim()) {
+      setSel(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const pageOf = (node: Node): HTMLElement | null =>
+      ((node.nodeType === 1 ? (node as Element) : node.parentElement)?.closest(
+        "[data-page-index]",
+      ) as HTMLElement | null) ?? null;
+    const startPage = pageOf(range.startContainer);
+    const endPage = pageOf(range.endContainer);
+    // Outside the reader, or a cross-page selection → unusable.
+    if (!startPage || startPage !== endPage) {
+      setSel(null);
+      return;
+    }
+    const pageIndex = Number(startPage.dataset.pageIndex);
+    if (Number.isNaN(pageIndex)) {
+      setSel(null);
+      return;
+    }
+
+    const sourceText = raw.trim();
+    // Only offer the toolbar if the selection will actually re-highlight.
+    const located = locate(pages[pageIndex] ?? "", sourceText);
+    if (!located) {
+      setSel(null);
+      return;
+    }
+
+    // Does the selection intersect an already-highlighted span? The reader can
+    // only mark non-overlapping ranges (earliest start wins), so the toolbar
+    // warns before the user saves. perPage's segments partition the page text
+    // exactly, so accumulating their lengths recovers each span's raw offsets.
+    let overlaps = false;
+    let cursor = 0;
+    for (const seg of perPage[pageIndex].segments) {
+      const segEnd = cursor + seg.text.length;
+      if (seg.itemId && cursor < located.end && segEnd > located.start) {
+        overlaps = true;
+        break;
+      }
+      cursor = segEnd;
+    }
+
+    const col = colRef.current;
+    if (!col) return;
+    const colRect = col.getBoundingClientRect();
+    const r = range.getBoundingClientRect();
+    const { anchor, anchorEnd } = selectionToAnchors(sourceText);
+    setSel({
+      pageIndex,
+      sourceText,
+      anchor,
+      anchorEnd,
+      overlaps,
+      rect: {
+        top: r.bottom - colRect.top + 6,
+        left: Math.max(
+          0,
+          Math.min(r.left - colRect.left, colRect.width - TOOLBAR_WIDTH - 16),
+        ),
+      },
+    });
+  }
+
+  function addAsNewSection(taxonomyKey: string) {
+    if (!sel) return;
+    const newSection: ParsedSection = {
+      taxonomyKey,
+      extractedValue: "",
+      sourceText: sel.sourceText,
+      anchor: sel.anchor,
+      anchorEnd: sel.anchorEnd,
+      confidence: 1,
+      status: "flagged",
+      note: "Added from a document selection — set the value, then confirm.",
+    };
+    const newIndex = district.sections.length;
+    void save({ sections: [...district.sections, newSection] }).then(
+      (ok) => ok && setActive((prev) => new Set(prev).add(`s:${newIndex}`)),
+    );
+    clearSelection();
+  }
+
+  function appendToSection(index: number) {
+    if (!sel) return;
+    const target = district.sections[index];
+    if (!target) return;
+    void save({
+      sections: district.sections.map((s, i) =>
+        i === index
+          ? {
+              ...s,
+              sourceText: `${s.sourceText}\n\n${sel.sourceText}`,
+              status: "flagged",
+              note: "Text added during review — re-confirm.",
+            }
+          : s,
+      ),
+      // Open the target's editor so the grown source text and re-flag are visible.
+    }).then((ok) => ok && setActive((prev) => new Set(prev).add(`s:${index}`)));
+    clearSelection();
+  }
+
   function focus(id: string) {
     const willOpen = !active.has(id);
     toggle(id);
@@ -435,16 +609,24 @@ function DistrictReview({
         <Legend dot="bg-[var(--color-ok)]" label="Confirmed" />
         <Legend dot="bg-[var(--color-flag)]" label="Needs review" />
         <Legend dot="bg-[#7c3aed]" label="Uncategorized" />
-        <span>Click any highlight (or an item on the right) to review it.</span>
+        <span>
+          Click any highlight to review it — or select any passage in the text to
+          capture it as a section.
+        </span>
       </div>
 
       <div className="flex flex-col gap-6 lg:flex-row">
         {/* Document reader */}
         {hasDoc ? (
-          <div className="min-w-0 flex-1 space-y-4">
+          <div
+            ref={colRef}
+            onMouseUp={onReaderMouseUp}
+            className="relative min-w-0 flex-1 space-y-4"
+          >
             {pages.map((pageText, pi) => (
               <div
                 key={pi}
+                data-page-index={pi}
                 className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5"
               >
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-muted)]">
@@ -480,6 +662,18 @@ function DistrictReview({
                 </div>
               </div>
             ))}
+            {sel && (
+              <SelectionToolbar
+                top={sel.rect.top}
+                left={sel.rect.left}
+                preview={sel.sourceText}
+                overlaps={sel.overlaps}
+                sections={district.sections}
+                onNew={addAsNewSection}
+                onAppend={appendToSection}
+                onClose={clearSelection}
+              />
+            )}
           </div>
         ) : (
           <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-muted)]">
@@ -560,6 +754,14 @@ function SectionEditor({
         }}
         className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
       >
+        {/* A custom-named section's key isn't in TAXONOMY — without its own
+            option the select would render blank. Keyed to the section's saved
+            key so it stays selectable while the draft changes. */}
+        {!TAXONOMY_BY_KEY[section.taxonomyKey] && (
+          <option value={section.taxonomyKey}>
+            {section.taxonomyKey} (custom)
+          </option>
+        )}
         {TAXONOMY.map((t) => (
           <option key={t.key} value={t.key}>
             {t.label}
@@ -611,6 +813,171 @@ function SectionEditor({
           Close
         </button>
       </div>
+    </div>
+  );
+}
+
+// Floating toolbar shown over a fresh text selection in the reader. Two tabs:
+// create a NEW section (a taxonomy slot or a typed custom name) or APPEND the
+// passage to one of the district's existing sections. Positioned absolutely
+// within the reader column (which is `relative`).
+function SelectionToolbar({
+  top,
+  left,
+  preview,
+  overlaps,
+  sections,
+  onNew,
+  onAppend,
+  onClose,
+}: {
+  top: number;
+  left: number;
+  preview: string;
+  overlaps: boolean;
+  sections: ParsedSection[];
+  onNew: (taxonomyKey: string) => void;
+  onAppend: (index: number) => void;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"new" | "existing">("new");
+  const [newMode, setNewMode] = useState<"taxonomy" | "custom">("taxonomy");
+  const [taxonomyKey, setTaxonomyKey] = useState(TAXONOMY[0].key);
+  const [customName, setCustomName] = useState("");
+
+  const tabClass = (on: boolean) =>
+    `flex-1 rounded px-2 py-1 font-medium ${
+      on ? "bg-[var(--color-surface)] text-[var(--color-ink)] shadow-sm" : "text-[var(--color-muted)]"
+    }`;
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Add selection to a section"
+      style={{ top, left, width: TOOLBAR_WIDTH }}
+      // Keep clicks inside from clearing the native selection prematurely.
+      onMouseDown={(e) => e.stopPropagation()}
+      onMouseUp={(e) => e.stopPropagation()}
+      className="absolute z-40 rounded-[11px] border border-[var(--color-line)] bg-[var(--color-surface)] p-3 text-[var(--color-ink)] shadow-[0_14px_38px_rgba(16,27,48,.2)]"
+    >
+      {/* What was captured — grounds the action on the exact passage. */}
+      <div className="mb-2 flex items-start gap-1.5 text-[11px] leading-snug text-[var(--color-muted)]">
+        <Highlighter size={12} strokeWidth={2} className="mt-0.5 shrink-0" />
+        <span className="line-clamp-2">
+          “{preview.length > 160 ? `${preview.slice(0, 160)}…` : preview}”
+        </span>
+      </div>
+      {overlaps && (
+        <p className="mb-2 rounded-md bg-[var(--color-flag-soft)] px-2 py-1.5 text-[11px] leading-snug text-[var(--color-flag)]">
+          Overlaps an existing highlight. The text is saved either way, but only
+          the earlier of the two spans stays marked in the reader.
+        </p>
+      )}
+      <div className="mb-2 flex gap-1 rounded-md bg-[var(--color-canvas)] p-0.5 text-xs">
+        <button type="button" onClick={() => setTab("new")} className={tabClass(tab === "new")}>
+          New section
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("existing")}
+          className={tabClass(tab === "existing")}
+        >
+          Add to existing
+        </button>
+      </div>
+
+      {tab === "new" ? (
+        <div className="space-y-2">
+          <div className="flex gap-4 text-xs text-[var(--color-ink)]">
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="selection-new-mode"
+                checked={newMode === "taxonomy"}
+                onChange={() => setNewMode("taxonomy")}
+              />
+              Taxonomy
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="selection-new-mode"
+                checked={newMode === "custom"}
+                onChange={() => setNewMode("custom")}
+              />
+              Custom name
+            </label>
+          </div>
+          {newMode === "taxonomy" ? (
+            <select
+              value={taxonomyKey}
+              onChange={(e) => setTaxonomyKey(e.target.value)}
+              className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            >
+              {TAXONOMY.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              autoFocus
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              placeholder="Section name (e.g. Extra PD stipend)"
+              className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            />
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={newMode === "custom" && !customName.trim()}
+              onClick={() =>
+                onNew(newMode === "taxonomy" ? taxonomyKey : customName.trim())
+              }
+              className="rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+            >
+              Add section
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="ml-auto rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sections.length === 0 ? (
+            <p className="text-xs text-[var(--color-muted)]">
+              No sections yet — add one first.
+            </p>
+          ) : (
+            <select
+              defaultValue=""
+              onChange={(e) => e.target.value !== "" && onAppend(Number(e.target.value))}
+              className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+            >
+              <option value="">Append to section…</option>
+              {sections.map((s, i) => (
+                <option key={i} value={i}>
+                  {sectionLabel(s.taxonomyKey)} — {s.extractedValue || "no value"}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }

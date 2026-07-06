@@ -42,6 +42,35 @@ export function locate(
   return { start: map[idx], end: map[idx + q.length - 1] + 1 };
 }
 
+// How many chars of the selection's edges to keep as start/end locators.
+const SELECTION_ANCHOR_LEN = 40;
+
+/**
+ * Turn a user-selected passage into the verbatim `anchor` (start locator) and
+ * `anchorEnd` (end locator) that `locateSpan` re-matches to highlight the EXACT
+ * selection — the same shape the parser emits. Unlike a terse AI anchor (a mere
+ * locator that `locateSpan` grows to a sentence boundary), a user drag IS the
+ * intended span, so we emit a head + a tail and let `locateSpan` highlight
+ * precisely `[head … tail]` with no boundary expansion.
+ *
+ * The two locators are each up to 40 chars but never more than half the
+ * selection, so they can't overlap and `locateSpan` always finds the tail
+ * strictly after the head. Anchors are matched, never shown, so an occasional
+ * mid-word cut is fine — they stay exact substrings of `sourceText`, never
+ * repaired. Only a selection too short to split into two reliable (≥4 normalized
+ * char) locators collapses to a single anchor and leans on `locateSpan`'s
+ * `expandToBoundary` fallback — a rare, tiny-selection case.
+ */
+export function selectionToAnchors(sourceText: string): {
+  anchor: string;
+  anchorEnd?: string;
+} {
+  const text = sourceText;
+  const size = Math.min(SELECTION_ANCHOR_LEN, Math.floor(text.length / 2));
+  if (size < 8) return { anchor: text };
+  return { anchor: text.slice(0, size), anchorEnd: text.slice(text.length - size) };
+}
+
 // A located span never grows past this many raw chars — a guard against a bad
 // end anchor (or a runaway boundary expansion) highlighting half the page.
 const MAX_SPAN_CHARS = 1400;
