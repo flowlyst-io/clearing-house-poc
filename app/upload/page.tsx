@@ -4,18 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud, Loader2, Check, Sparkles } from "lucide-react";
 import { extractPdfText } from "@/lib/pdf";
-import { addDistrict } from "@/lib/store";
+import {
+  startParse,
+  useParseJob,
+  dismissJob,
+  retry,
+  PARSE_STEPS,
+} from "@/lib/parseJob";
 import { SAMPLE_DISTRICT_NAME, SAMPLE_PAGES, SAMPLE_TEXT } from "@/lib/sample";
-import type { District, ParseResult } from "@/lib/types";
 
-type Phase = "idle" | "extracting" | "ready" | "parsing" | "error";
-
-const PARSE_STEPS = [
-  "Reading the contract text…",
-  "Splitting into standardized sections…",
-  "Extracting comparable values…",
-  "Flagging low-confidence sections…",
-];
+// Only the local extraction lifecycle lives here now; the long-running parse
+// (and its progress) lives in lib/parseJob so it survives navigation.
+type Phase = "idle" | "extracting" | "ready" | "error";
 
 export default function UploadPage() {
   const router = useRouter();
@@ -27,21 +27,26 @@ export default function UploadPage() {
   // Per-page text from the PDF/sample (null when the user pasted text instead).
   const [pages, setPages] = useState<string[] | null>(null);
   const [meta, setMeta] = useState<{ pages?: number; chars: number }>({ chars: 0 });
-  const [step, setStep] = useState(0);
   const [error, setError] = useState<{ message: string; retryable: boolean } | null>(
     null,
   );
 
-  // Advance the presentational parse steps while the real request is in flight.
+  // The parse now lives in the module store (survives navigation). On remount
+  // mid-parse this seeds from the live job, so the stepper reappears.
+  const job = useParseJob();
+  const parsing = job?.phase === "parsing";
+
+  // Auto-navigate to Review only while the user is still on Upload when the
+  // parse finishes. Elsewhere the Sidebar shows a clickable "ready" pill. The
+  // effect lives here (not in the store) so it can only fire from a mounted
+  // Upload page; dismissJob() first clears the job to prevent a double push.
   useEffect(() => {
-    if (phase !== "parsing") return;
-    setStep(0);
-    const t = setInterval(
-      () => setStep((s) => Math.min(s + 1, PARSE_STEPS.length - 1)),
-      700,
-    );
-    return () => clearInterval(t);
-  }, [phase]);
+    if (job?.phase === "done" && job.resultId) {
+      const id = job.resultId;
+      dismissJob();
+      router.push(`/review?d=${id}`);
+    }
+  }, [job?.phase, job?.resultId, router]);
 
   async function handleFile(file: File) {
     setError(null);
@@ -87,60 +92,14 @@ export default function UploadPage() {
     }, 650);
   }
 
-  async function parse() {
+  // Fire-and-forget into the module store; progress + save + navigation are
+  // handled there and via the effect above. Extraction stays local.
+  function parse() {
     setError(null);
-    setPhase("parsing");
-    try {
-      const res = await fetch("/api/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, districtName: districtName || undefined }),
-      });
-      const data = (await res.json()) as ParseResult & {
-        error?: string;
-        retryable?: boolean;
-      };
-      if (!res.ok) {
-        setError({ message: data.error || "Parse failed", retryable: !!data.retryable });
-        setPhase("error");
-        return;
-      }
-
-      const district: District = {
-        id: `parsed-${Date.now()}`,
-        name: data.districtName,
-        term: data.term,
-        source: "parsed",
-        sections: data.sections,
-        unmatched: data.unmatched,
-        // Document text for the Review reader. PDF/sample → per-page; pasted → one page.
-        pages: pages && pages.length ? pages : [text],
-        inPool: false,
-        createdAt: Date.now(),
-      };
-      try {
-        await addDistrict(district);
-      } catch (storeErr) {
-        setError({
-          message:
-            (storeErr instanceof Error ? storeErr.message : "Couldn't save the contract") +
-            " — your parse succeeded; try saving again.",
-          retryable: true,
-        });
-        setPhase("error");
-        return;
-      }
-      router.push(`/review?d=${district.id}`);
-    } catch {
-      setError({
-        message: "Couldn't reach the parser. Check your connection and try again.",
-        retryable: true,
-      });
-      setPhase("error");
-    }
+    startParse({ text, pages, districtName });
   }
 
-  const canParse = text.trim().length >= 120 && phase !== "parsing";
+  const canParse = text.trim().length >= 120 && !parsing;
 
   return (
     <div className="max-w-[680px]">
@@ -155,7 +114,7 @@ export default function UploadPage() {
 
       {/* Dropzone */}
       <div
-        onClick={() => phase !== "parsing" && fileInput.current?.click()}
+        onClick={() => !parsing && fileInput.current?.click()}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
@@ -244,13 +203,14 @@ export default function UploadPage() {
         />
       </div>
 
+      {/* Extraction errors (non-PDF, unreadable PDF) — local, not retryable. */}
       {error && (
         <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
           <span>{error.message}</span>
           {error.retryable && (
             <button
               onClick={parse}
-              disabled={phase === "parsing"}
+              disabled={parsing}
               className="shrink-0 rounded-md border border-[var(--color-flag)] px-2 py-1 text-xs font-medium hover:bg-white/40 disabled:opacity-40"
             >
               Retry
@@ -259,11 +219,28 @@ export default function UploadPage() {
         </div>
       )}
 
-      {/* Parse progress */}
-      {phase === "parsing" ? (
+      {/* Parse/save errors from the module store — retry re-runs the last parse. */}
+      {job?.phase === "error" && (
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-[var(--color-flag-soft)] px-3 py-2 text-sm text-[var(--color-flag)]">
+          <span>{job.error}</span>
+          {job.retryable && (
+            <button
+              onClick={retry}
+              disabled={parsing}
+              className="shrink-0 rounded-md border border-[var(--color-flag)] px-2 py-1 text-xs font-medium hover:bg-white/40 disabled:opacity-40"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Parse progress — driven by the module store so it resumes on remount */}
+      {parsing ? (
         <div className="mt-6 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5 shadow-[0_1px_2px_rgba(16,27,48,.04)]">
           <div className="space-y-3">
             {PARSE_STEPS.map((label, i) => {
+              const step = job?.step ?? 0;
               const state = i < step ? "done" : i === step ? "active" : "pending";
               return (
                 <div key={i} className="flex items-center gap-3 text-sm">
