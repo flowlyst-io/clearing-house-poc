@@ -121,8 +121,11 @@ async function completeViaOpenRouter<T>(opts: CompleteJSONOptions): Promise<T> {
   }
 
   const data = (await res.json()) as {
+    model?: string;
     choices?: { message?: { content?: string } }[];
   };
+  // Surface which model the auto-router actually chose (shows in the dev log).
+  console.log(`[llm] openrouter (${opts.kind}) → model: ${data.model ?? "unknown"}`);
   const content = data.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
     throw new LlmHttpError(502, "OpenRouter returned no content.");
