@@ -198,36 +198,45 @@ function DistrictReview({
     setActive((prev) => new Set([...prev].filter((id) => !id.startsWith("u:"))));
   }
 
-  const items: Item[] = [
-    ...district.sections.map((section, index) => ({
-      id: `s:${index}`,
-      kind: "section" as const,
-      index,
-      section,
-      query: section.anchor || section.sourceText.slice(0, 80),
-      endQuery: section.anchorEnd,
-    })),
-    ...(district.unmatched ?? []).map((unmatched, index) => ({
-      id: `u:${index}`,
-      kind: "unmatched" as const,
-      index,
-      unmatched,
-      query: unmatched.anchor || unmatched.sourceText.slice(0, 80),
-      endQuery: unmatched.anchorEnd,
-    })),
-  ];
-  const byId = new Map(items.map((it) => [it.id, it]));
+  const items: Item[] = useMemo(
+    () => [
+      ...district.sections.map((section, index) => ({
+        id: `s:${index}`,
+        kind: "section" as const,
+        index,
+        section,
+        query: section.anchor || section.sourceText.slice(0, 80),
+        endQuery: section.anchorEnd,
+      })),
+      ...(district.unmatched ?? []).map((unmatched, index) => ({
+        id: `u:${index}`,
+        kind: "unmatched" as const,
+        index,
+        unmatched,
+        query: unmatched.anchor || unmatched.sourceText.slice(0, 80),
+        endQuery: unmatched.anchorEnd,
+      })),
+    ],
+    [district.sections, district.unmatched],
+  );
+  const byId = useMemo(() => new Map(items.map((it) => [it.id, it])), [items]);
 
-  const pages = district.pages ?? [];
+  const pages = useMemo(() => district.pages ?? [], [district.pages]);
   const hasDoc = pages.length > 0;
-  const anchorItems: AnchorItem[] = items.map((it) => ({
-    id: it.id,
-    query: it.query,
-    endQuery: it.endQuery,
-  }));
-  const perPage = pages.map((p) => buildSegments(p, anchorItems));
-  const placed = new Set<string>();
-  perPage.forEach((pp) => pp.placed.forEach((id) => placed.add(id)));
+  // Anchor-matching over every page is the heavy part of this render (~150ms on a
+  // large contract). Memoize it so it only recomputes when the document or its
+  // anchors change — not on every popover toggle / unrelated re-render.
+  const { perPage, placed } = useMemo(() => {
+    const anchorItems: AnchorItem[] = items.map((it) => ({
+      id: it.id,
+      query: it.query,
+      endQuery: it.endQuery,
+    }));
+    const perPage = pages.map((p) => buildSegments(p, anchorItems));
+    const placed = new Set<string>();
+    perPage.forEach((pp) => pp.placed.forEach((id) => placed.add(id)));
+    return { perPage, placed };
+  }, [items, pages]);
 
   const flagged = items.filter(
     (it) => it.kind === "section" && it.section.status === "flagged",
