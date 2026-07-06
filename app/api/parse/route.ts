@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAnthropic, PARSE_MODEL } from "@/lib/anthropic";
+import { completeJSON } from "@/lib/llm";
 import { classifyError } from "@/lib/apiError";
 import { TAXONOMY } from "@/lib/taxonomy";
 import type { ParseResult, ParsedSection } from "@/lib/types";
@@ -37,100 +37,79 @@ export async function POST(req: NextRequest) {
     // Guard against absurdly large inputs; a CBA is well within this.
     const contract = text.slice(0, 600_000);
 
-    const client = getAnthropic();
-    const stream = client.messages.stream({
-      model: PARSE_MODEL,
-      max_tokens: 16000,
-      thinking: { type: "adaptive" },
-      output_config: {
-        // "medium" keeps extraction accurate while keeping the parse practical —
-        // the verbatim-anchor requirement made "high" run several minutes.
-        effort: "medium",
-        format: {
-          type: "json_schema",
-          schema: {
+    const schema = {
+      type: "object",
+      properties: {
+        districtName: { type: "string" },
+        term: { type: "string" },
+        sections: {
+          type: "array",
+          items: {
             type: "object",
             properties: {
-              districtName: { type: "string" },
-              term: { type: "string" },
-              sections: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    taxonomyKey: { type: "string", enum: KEYS },
-                    found: { type: "boolean" },
-                    extractedValue: { type: "string" },
-                    sourceText: { type: "string" },
-                    anchor: { type: "string" },
-                    anchorEnd: { type: "string" },
-                    confidence: { type: "number" },
-                  },
-                  required: [
-                    "taxonomyKey",
-                    "found",
-                    "extractedValue",
-                    "sourceText",
-                    "anchor",
-                    "anchorEnd",
-                    "confidence",
-                  ],
-                  additionalProperties: false,
-                },
-              },
-              unmatched: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    label: { type: "string" },
-                    sourceText: { type: "string" },
-                    anchor: { type: "string" },
-                    anchorEnd: { type: "string" },
-                  },
-                  required: ["label", "sourceText", "anchor", "anchorEnd"],
-                  additionalProperties: false,
-                },
-              },
+              taxonomyKey: { type: "string", enum: KEYS },
+              found: { type: "boolean" },
+              extractedValue: { type: "string" },
+              sourceText: { type: "string" },
+              anchor: { type: "string" },
+              anchorEnd: { type: "string" },
+              confidence: { type: "number" },
             },
-            required: ["districtName", "term", "sections", "unmatched"],
+            required: [
+              "taxonomyKey",
+              "found",
+              "extractedValue",
+              "sourceText",
+              "anchor",
+              "anchorEnd",
+              "confidence",
+            ],
+            additionalProperties: false,
+          },
+        },
+        unmatched: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              sourceText: { type: "string" },
+              anchor: { type: "string" },
+              anchorEnd: { type: "string" },
+            },
+            required: ["label", "sourceText", "anchor", "anchorEnd"],
             additionalProperties: false,
           },
         },
       },
-      system: [
-        "You extract structured data from a New York public-school teachers' collective bargaining agreement (CBA).",
-        "The text comes from OCR, so expect artifacts: split words ('LEA VE' = 'LEAVE'), stray spaces, garbled roman numerals. Read through them.",
-        "",
-        "Map the contract into this FIXED comparison taxonomy. Produce exactly one entry per key:",
-        taxonomyBrief,
-        "",
-        "For each section:",
-        "- found: true only if the contract actually addresses it.",
-        "- extractedValue: the concise, scannable value described by VALUE above (e.g. '5 days', '$48,000 start / $89,400 max', '85% individual / 75% family'). Keep it short — it goes on a comparison card. If found is false, use an empty string.",
-        "- sourceText: the verbatim contract language for this section (you may repair obvious OCR spacing). One to a few sentences — enough to justify the value. Empty string if not found.",
-        "- anchor: a SHORT substring (about 6-15 words) copied EXACTLY from the contract text where this section BEGINS — character for character, INCLUDING any OCR quirks (split words, stray spaces). Do NOT repair it. This is used to locate the section inside the document, so it must match the provided text verbatim. Empty string if not found.",
-        "- anchorEnd: a SHORT substring (about 6-15 words) copied EXACTLY from the contract text where this section ENDS — its last clause or value. Same verbatim/OCR rules as anchor (do NOT repair). It MUST appear AFTER anchor in the text; together they bracket the full section so the whole passage can be highlighted, not just its first words. Use an empty string when the section is short enough that anchor already covers it, or when not found.",
-        "- confidence: 0.0–1.0, honest. Lower it when the value is implied rather than stated, when OCR made the clause hard to read, or when the contract is ambiguous. This drives which sections a human reviews, so do not inflate it.",
-        "",
-        "Also infer the district name and the contract term (e.g. '2023–2027') from the document.",
-        "Put any substantive section that does NOT fit the taxonomy into 'unmatched' (label + a short source excerpt + exact verbatim 'anchor' and 'anchorEnd', same rules as above) so a person can place it. Do not force-fit.",
-      ].join("\n"),
-      messages: [
-        {
-          role: "user",
-          content: `${
-            districtName ? `District (hint): ${districtName}\n\n` : ""
-          }Contract text:\n\n${contract}`,
-        },
-      ],
-    });
+      required: ["districtName", "term", "sections", "unmatched"],
+      additionalProperties: false,
+    };
 
-    const message = await stream.finalMessage();
-    const textBlock = message.content.find((b) => b.type === "text");
-    const raw = textBlock && "text" in textBlock ? textBlock.text : "{}";
+    const system = [
+      "You extract structured data from a New York public-school teachers' collective bargaining agreement (CBA).",
+      "The text comes from OCR, so expect artifacts: split words ('LEA VE' = 'LEAVE'), stray spaces, garbled roman numerals. Read through them.",
+      "",
+      "Map the contract into this FIXED comparison taxonomy. Produce exactly one entry per key:",
+      taxonomyBrief,
+      "",
+      "For each section:",
+      "- found: true only if the contract actually addresses it.",
+      "- extractedValue: the concise, scannable value described by VALUE above (e.g. '5 days', '$48,000 start / $89,400 max', '85% individual / 75% family'). Keep it short — it goes on a comparison card. If found is false, use an empty string.",
+      "- sourceText: the verbatim contract language for this section (you may repair obvious OCR spacing). One to a few sentences — enough to justify the value. Empty string if not found.",
+      "- anchor: a SHORT substring (about 6-15 words) copied EXACTLY from the contract text where this section BEGINS — character for character, INCLUDING any OCR quirks (split words, stray spaces). Do NOT repair it. This is used to locate the section inside the document, so it must match the provided text verbatim. Empty string if not found.",
+      "- anchorEnd: a SHORT substring (about 6-15 words) copied EXACTLY from the contract text where this section ENDS — its last clause or value. Same verbatim/OCR rules as anchor (do NOT repair). It MUST appear AFTER anchor in the text; together they bracket the full section so the whole passage can be highlighted, not just its first words. Use an empty string when the section is short enough that anchor already covers it, or when not found.",
+      "- confidence: 0.0–1.0, honest. Lower it when the value is implied rather than stated, when OCR made the clause hard to read, or when the contract is ambiguous. This drives which sections a human reviews, so do not inflate it.",
+      "",
+      "Also infer the district name and the contract term (e.g. '2023–2027') from the document.",
+      "Put any substantive section that does NOT fit the taxonomy into 'unmatched' (label + a short source excerpt + exact verbatim 'anchor' and 'anchorEnd', same rules as above) so a person can place it. Do not force-fit.",
+    ].join("\n");
 
-    const parsed = JSON.parse(raw) as {
+    const user = `${
+      districtName ? `District (hint): ${districtName}\n\n` : ""
+    }Contract text:\n\n${contract}`;
+
+    const parsed = await completeJSON<{
       districtName: string;
       term: string;
       sections: {
@@ -148,7 +127,15 @@ export async function POST(req: NextRequest) {
         anchor?: string;
         anchorEnd?: string;
       }[];
-    };
+    }>({
+      kind: "parse",
+      system,
+      user,
+      schemaName: "contract_extraction",
+      schema,
+      maxTokens: 16000,
+      effort: "medium",
+    });
 
     // Keep only found sections; status from confidence (low → flagged for a human).
     const sections: ParsedSection[] = parsed.sections

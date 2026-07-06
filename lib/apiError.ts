@@ -72,6 +72,25 @@ export function classifyError(err: unknown): {
     };
   }
 
+  // OpenRouter (fetch-based) failures arrive as LlmHttpError with an HTTP status.
+  // Duck-typed by name to avoid importing lib/llm here.
+  if (
+    err instanceof Error &&
+    err.name === "LlmHttpError" &&
+    typeof (err as { status?: unknown }).status === "number"
+  ) {
+    const status = (err as unknown as { status: number }).status;
+    const retryable = status === 429 || status >= 500;
+    return {
+      status,
+      body: {
+        error: err.message,
+        retryable,
+        code: retryable ? "server_error" : "request_error",
+      },
+    };
+  }
+
   const message = err instanceof Error ? err.message : "Unknown error";
   return { status: 500, body: { error: message, retryable: false } };
 }
