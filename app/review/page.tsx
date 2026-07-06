@@ -37,7 +37,13 @@ function ReviewInner() {
     [districts],
   );
 
-  const focusId = params.get("d") ?? needsReview[0]?.id ?? null;
+  // With no explicit ?d=, land on the MOST RECENT contract still in review — i.e.
+  // the one you most likely just uploaded — rather than the oldest in the queue.
+  const focusId =
+    params.get("d") ??
+    (needsReview.length
+      ? needsReview.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).id
+      : null);
 
   // The focused district is fetched WITH its per-page text so the document
   // reader can render it (the list omits `pages`). Mutations replace it in place
@@ -81,7 +87,14 @@ function ReviewInner() {
         </div>
       );
     }
-    return null;
+    // districts still loading (the DB always holds seeds, so an empty list means
+    // the fetch hasn't returned yet) — show a loading state, never a bare blank.
+    return (
+      <div className="space-y-4">
+        <h1 className="text-xl font-semibold">Review</h1>
+        <p className="text-sm text-[var(--color-muted)]">Loading your contracts…</p>
+      </div>
+    );
   }
 
   return (
@@ -330,55 +343,13 @@ function DistrictReview({
 
   function renderControls(it: Item) {
     if (it.kind === "section") {
-      const s = it.section;
       return (
-        <div className="space-y-2">
-          <select
-            value={s.taxonomyKey}
-            onChange={(e) => patchSection(it.index, { taxonomyKey: e.target.value })}
-            className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
-          >
-            {TAXONOMY.map((t) => (
-              <option key={t.key} value={t.key}>
-                {t.label}
-              </option>
-            ))}
-          </select>
-          <textarea
-            value={s.extractedValue}
-            onChange={(e) => patchSection(it.index, { extractedValue: e.target.value })}
-            placeholder="Value (e.g. 5 days)"
-            rows={2}
-            // Wraps long values (a full salary schedule) instead of clipping them
-            // to one line; field-sizing grows it to fit, capped so the popover
-            // can't run off-screen (scrolls past the cap).
-            className="w-full resize-y rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm leading-snug [field-sizing:content] min-h-[2.25rem] max-h-40 overflow-y-auto"
-          />
-          <div className="flex gap-2">
-            {s.status === "flagged" ? (
-              <button
-                disabled={!s.extractedValue.trim()}
-                onClick={() => patchSection(it.index, { status: "confirmed", note: undefined })}
-                className="rounded-md bg-[var(--color-ok)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
-              >
-                Confirm
-              </button>
-            ) : (
-              <button
-                onClick={() => patchSection(it.index, { status: "flagged", note: "Re-opened." })}
-                className="rounded-md border border-[var(--color-line)] px-3 py-1.5 text-xs"
-              >
-                Re-open
-              </button>
-            )}
-            <button
-              onClick={() => close(it.id)}
-              className="rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+        <SectionEditor
+          key={it.id}
+          section={it.section}
+          onSave={(patch) => patchSection(it.index, patch)}
+          onClose={() => close(it.id)}
+        />
       );
     }
     const u = it.unmatched;
@@ -548,6 +519,97 @@ function DistrictReview({
             renderControls={renderControls}
           />
         </aside>
+      </div>
+    </div>
+  );
+}
+
+// The section value/taxonomy editor. Edits live in LOCAL state and only persist
+// on Save / Confirm / blur — not on every keystroke — so typing is smooth and a
+// slow save response can't reset the field mid-edit (the old per-keystroke PATCH
+// round-tripped through the server and clobbered what you were typing).
+function SectionEditor({
+  section,
+  onSave,
+  onClose,
+}: {
+  section: ParsedSection;
+  onSave: (patch: Partial<ParsedSection>) => void;
+  onClose: () => void;
+}) {
+  const [taxonomyKey, setTaxonomyKey] = useState(section.taxonomyKey);
+  const [value, setValue] = useState(section.extractedValue);
+  const [saved, setSaved] = useState(false);
+
+  const dirty =
+    taxonomyKey !== section.taxonomyKey || value !== section.extractedValue;
+
+  // One PATCH carries the whole draft (taxonomy + value) plus any status change.
+  function commit(extra?: Partial<ParsedSection>) {
+    onSave({ taxonomyKey, extractedValue: value, ...extra });
+    setSaved(true);
+  }
+
+  return (
+    <div className="space-y-2">
+      <select
+        value={taxonomyKey}
+        onChange={(e) => {
+          setTaxonomyKey(e.target.value);
+          setSaved(false);
+        }}
+        className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+      >
+        {TAXONOMY.map((t) => (
+          <option key={t.key} value={t.key}>
+            {t.label}
+          </option>
+        ))}
+      </select>
+      <textarea
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          setSaved(false);
+        }}
+        onBlur={() => dirty && commit()}
+        placeholder="Value (e.g. 5 days)"
+        rows={2}
+        className="w-full resize-y rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1.5 text-sm leading-snug [field-sizing:content] min-h-[2.25rem] max-h-40 overflow-y-auto"
+      />
+      <div className="flex items-center gap-2">
+        {section.status === "flagged" ? (
+          <button
+            disabled={!value.trim()}
+            onClick={() => commit({ status: "confirmed", note: undefined })}
+            className="rounded-md bg-[var(--color-ok)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+          >
+            Confirm
+          </button>
+        ) : (
+          <button
+            onClick={() => commit({ status: "flagged", note: "Re-opened." })}
+            className="rounded-md border border-[var(--color-line)] px-3 py-1.5 text-xs"
+          >
+            Re-open
+          </button>
+        )}
+        <button
+          disabled={!dirty}
+          onClick={() => commit()}
+          className="rounded-md border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] disabled:opacity-40"
+        >
+          Save
+        </button>
+        {!dirty && saved && (
+          <span className="text-xs font-medium text-[var(--color-ok)]">Saved ✓</span>
+        )}
+        <button
+          onClick={onClose}
+          className="ml-auto rounded-md px-2 py-1.5 text-xs text-[var(--color-muted)] hover:bg-[var(--color-canvas)]"
+        >
+          Close
+        </button>
       </div>
     </div>
   );

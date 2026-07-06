@@ -15,6 +15,11 @@ import type { District } from "./types";
 
 const EVT = "clearinghouse:districts-changed";
 
+// Last successfully-fetched list, kept at module scope so a component that
+// remounts (e.g. navigating Compare → Review) starts from the known list instead
+// of an empty array — no blank flash while it re-fetches in the background.
+let cache: District[] = [];
+
 function notify() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(EVT));
 }
@@ -22,7 +27,8 @@ function notify() {
 async function fetchDistricts(): Promise<District[]> {
   const res = await fetch("/api/districts");
   if (!res.ok) throw new Error("Failed to load districts");
-  return (await res.json()) as District[];
+  cache = (await res.json()) as District[];
+  return cache;
 }
 
 async function readError(res: Response, fallback: string): Promise<string> {
@@ -76,7 +82,8 @@ export async function getDistrict(id: string): Promise<District> {
 
 /** Reactive view of the pool (without `pages`). Re-fetches on any mutation. */
 export function useDistricts(): District[] {
-  const [districts, setDistricts] = useState<District[]>([]);
+  // Seed from the module cache so a remount shows the last known list immediately.
+  const [districts, setDistricts] = useState<District[]>(cache);
 
   useEffect(() => {
     let active = true;
