@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud, Loader2, Check, Sparkles } from "lucide-react";
 import { extractPdfText } from "@/lib/pdf";
+import type { Table } from "@/lib/tables";
+import TablePreview from "@/app/components/TablePreview";
 import {
   startParse,
   useParseJob,
@@ -26,6 +28,9 @@ export default function UploadPage() {
   const [text, setText] = useState("");
   // Per-page text from the PDF/sample (null when the user pasted text instead).
   const [pages, setPages] = useState<string[] | null>(null);
+  // Tables reconstructed from the PDF's text-layer coordinates, per page. Empty
+  // for pasted text and the canned sample (neither carries coordinates).
+  const [tables, setTables] = useState<Table[][]>([]);
   const [meta, setMeta] = useState<{ pages?: number; chars: number }>({ chars: 0 });
   const [error, setError] = useState<{ message: string; retryable: boolean } | null>(
     null,
@@ -62,9 +67,10 @@ export default function UploadPage() {
     }
     setPhase("extracting");
     try {
-      const { pages: extracted } = await extractPdfText(file);
+      const { pages: extracted, tables: extractedTables } = await extractPdfText(file);
       const combined = extracted.join("\n\n");
       setPages(extracted);
+      setTables(extractedTables);
       setText(combined);
       setMeta({ pages: extracted.length, chars: combined.length });
       setPhase("ready");
@@ -86,6 +92,7 @@ export default function UploadPage() {
     setTimeout(() => {
       setDistrictName(SAMPLE_DISTRICT_NAME);
       setPages(SAMPLE_PAGES);
+      setTables([]); // canned sample carries no coordinates
       setText(SAMPLE_TEXT);
       setMeta({ pages: SAMPLE_PAGES.length, chars: SAMPLE_TEXT.length });
       setPhase("ready");
@@ -194,6 +201,7 @@ export default function UploadPage() {
           onChange={(e) => {
             setText(e.target.value);
             setPages(null); // manual edit → treat as a single pasted page
+            setTables([]); // pasted text has no coordinates to reconstruct
             setMeta({ chars: e.target.value.length });
             if (phase === "idle" || phase === "error") setPhase("ready");
           }}
@@ -202,6 +210,10 @@ export default function UploadPage() {
           className="font-display mt-1.5 w-full rounded-lg border border-[#dde3ec] bg-[var(--color-surface)] px-3 py-2.5 text-[13.5px] leading-relaxed outline-none focus:border-[var(--color-accent)]"
         />
       </div>
+
+      {/* Tables reconstructed from PDF coordinates (no OCR). Only present for
+          real PDF uploads; absent for pasted text / the canned sample. */}
+      {phase === "ready" && <TablePreview tables={tables} />}
 
       {/* Extraction errors (non-PDF, unreadable PDF) — local, not retryable. */}
       {error && (
